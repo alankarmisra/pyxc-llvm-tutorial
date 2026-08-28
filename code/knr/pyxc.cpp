@@ -1135,13 +1135,13 @@ public:
 /// The expression stores RHS into the named variable and produces the assigned
 /// value.
 class AssignmentExprAST : public ExprAST {
-  string Name;
-  unique_ptr<ExprAST> Expr;
+  string VariableName;
+  unique_ptr<ExprAST> Expression;
 
 public:
-  AssignmentExprAST(const string &Name, unique_ptr<ExprAST> Expr,
+  AssignmentExprAST(const string &VariableName, unique_ptr<ExprAST> Expression,
                     ValueType Type)
-      : Name(Name), Expr(std::move(Expr)) {
+      : VariableName(VariableName), Expression(std::move(Expression)) {
     setType(Type);
   }
   bool shouldPrintValue() const override { return false; }
@@ -1310,10 +1310,10 @@ public:
 /// ReturnExprAST - Statement-like expression for return.
 /// Emits a function return and produces the returned value.
 class ReturnExprAST : public ExprAST {
-  unique_ptr<ExprAST> Expr;
+  unique_ptr<ExprAST> Expression;
 
 public:
-  ReturnExprAST(unique_ptr<ExprAST> Expr = nullptr) : Expr(std::move(Expr)) {
+  ReturnExprAST(unique_ptr<ExprAST> Expression = nullptr) : Expression(std::move(Expression)) {
     setType(ValueType::None);
   }
   bool isReturnExpr() const override { return true; }
@@ -1324,10 +1324,10 @@ public:
 /// BlockExprAST - A sequence of statements evaluated in order.
 /// The block's value is the value of the last statement executed.
 class BlockExprAST : public ExprAST {
-  vector<unique_ptr<ExprAST>> Stmts;
+  vector<unique_ptr<ExprAST>> Statements;
 
 public:
-  BlockExprAST(vector<unique_ptr<ExprAST>> Stmts) : Stmts(std::move(Stmts)) {
+  BlockExprAST(vector<unique_ptr<ExprAST>> Statements) : Statements(std::move(Statements)) {
     setType(ValueType::None);
   }
   Value *codegen() override;
@@ -1383,22 +1383,22 @@ public:
 };
 
 /// ForExprAST - Expression class for for loops.
-///   for <var> = <start>, <cond>, <step>: <body>
-/// The loop variable is in scope for <cond>, <step>, and <body> (through
+///   for <var> = <start>, <cond>, <update>: <body>
+/// The loop variable is in scope for <cond>, <update>, and <body> (through
 /// NamedValues). The expression always produces 0.0 — the loop is used for side
 /// effects.
 class ForExprAST : public ExprAST {
-  string VarName;
-  bool IsVarDecl;
+  string VariableName;
+  bool DeclaresVariable;
   ValueType VarType;
-  unique_ptr<ExprAST> Start, Cond, Step, Body;
+  unique_ptr<ExprAST> Start, Cond, Update, Body;
 
 public:
-  ForExprAST(const string &VarName, bool IsVarDecl, ValueType VarType,
+  ForExprAST(const string &VariableName, bool DeclaresVariable, ValueType VarType,
              unique_ptr<ExprAST> Start, unique_ptr<ExprAST> Cond,
-             unique_ptr<ExprAST> Step, unique_ptr<ExprAST> Body)
-      : VarName(VarName), IsVarDecl(IsVarDecl), VarType(VarType),
-        Start(std::move(Start)), Cond(std::move(Cond)), Step(std::move(Step)),
+             unique_ptr<ExprAST> Update, unique_ptr<ExprAST> Body)
+      : VariableName(VariableName), DeclaresVariable(DeclaresVariable), VarType(VarType),
+        Start(std::move(Start)), Cond(std::move(Cond)), Update(std::move(Update)),
         Body(std::move(Body)) {
     setType(ValueType::None);
   }
@@ -1552,10 +1552,10 @@ struct VarBinding {
 /// Each binding allocates stack storage in the current function's entry block
 /// and stores its initializer. Bindings persist for the rest of the function.
 class VarStmtAST : public ExprAST {
-  vector<VarBinding> VarNames;
+  vector<VarBinding> VariableBindings;
 
 public:
-  VarStmtAST(vector<VarBinding> VarNames) : VarNames(std::move(VarNames)) {
+  VarStmtAST(vector<VarBinding> VariableBindings) : VariableBindings(std::move(VariableBindings)) {
     setType(ValueType::None);
   }
   bool shouldPrintValue() const override { return false; }
@@ -3002,9 +3002,9 @@ static unique_ptr<ExprAST> ParseIdentifierExpr() {
 
 // ParseForParts - Parse the "= start, cond, step : suite" tail of a for-loop.
 // Also validates the parts against VarType (start/step assignable, cond bool).
-// Returns true on success and fills Start/Cond/Step/Body plus BodyIsBlock.
+// Returns true on success and fills Start/Cond/Update/Body plus BodyIsBlock.
 static bool ParseForParts(ValueType VarType, unique_ptr<ExprAST> &Start,
-                          unique_ptr<ExprAST> &Cond, unique_ptr<ExprAST> &Step,
+                          unique_ptr<ExprAST> &Cond, unique_ptr<ExprAST> &Update,
                           unique_ptr<ExprAST> &Body, bool &BodyIsBlock) {
   if (CurTok != '=')
     return LogError("Expected '=' after for variable"), false;
@@ -3032,8 +3032,8 @@ static bool ParseForParts(ValueType VarType, unique_ptr<ExprAST> &Start,
     return LogError("Expected ',' after for condition"), false;
   getNextToken(); // eat ','
 
-  Step = ParseExpression();
-  if (!Step)
+  Update = ParseExpression();
+  if (!Update)
     return false;
   if (CurTok != ':')
     return LogError("Expected ':' after for step"), false;
@@ -3056,19 +3056,19 @@ static bool ParseForParts(ValueType VarType, unique_ptr<ExprAST> &Start,
 static unique_ptr<ExprAST> ParseForStmt() {
   getNextToken(); // eat 'for'
 
-  bool IsVarDecl = false;
+  bool DeclaresVariable = false;
   if (CurTok == tok_var) {
-    IsVarDecl = true;
+    DeclaresVariable = true;
     getNextToken(); // optional 'var'
   }
 
   if (CurTok != tok_identifier)
     return LogError("Expected identifier after 'for'");
-  string VarName = IdentifierStr;
+  string VariableName = IdentifierStr;
   getNextToken(); // eat identifier
 
   ValueType VarType = ValueType::Error;
-  if (IsVarDecl) {
+  if (DeclaresVariable) {
     if (CurTok != ':')
       return LogError(
           "For loop variable requires a type annotation (e.g., ': int')");
@@ -3078,34 +3078,34 @@ static unique_ptr<ExprAST> ParseForStmt() {
       return nullptr;
     if (VarType == ValueType::None)
       return LogError("For loop variable cannot have None type");
-    if (IsDeclaredInCurrentScope(VarName))
+    if (IsDeclaredInCurrentScope(VariableName))
       return LogError(
-          ("Variable '" + VarName + "' already declared in this scope")
+          ("Variable '" + VariableName + "' already declared in this scope")
               .c_str());
   } else {
     if (CurTok == ':')
       return LogError("For loop variable requires 'var' to declare a type");
-    VarType = LookupVarType(VarName);
+    VarType = LookupVarType(VariableName);
     if (VarType == ValueType::Error)
       return LogError("Assignment to undeclared variable");
   }
 
-  unique_ptr<ExprAST> Start, Cond, Step, Body;
+  unique_ptr<ExprAST> Start, Cond, Update, Body;
   bool BodyIsBlock = false;
   ParseLoopGuard LoopGuard;
 
-  if (IsVarDecl) {
-    LoopScopeGuard LoopScope(VarName, VarType);
-    if (!ParseForParts(VarType, Start, Cond, Step, Body, BodyIsBlock))
+  if (DeclaresVariable) {
+    LoopScopeGuard LoopScope(VariableName, VarType);
+    if (!ParseForParts(VarType, Start, Cond, Update, Body, BodyIsBlock))
       return nullptr;
   } else {
-    if (!ParseForParts(VarType, Start, Cond, Step, Body, BodyIsBlock))
+    if (!ParseForParts(VarType, Start, Cond, Update, Body, BodyIsBlock))
       return nullptr;
   }
 
   LastStatementWasBlock = BodyIsBlock;
-  return make_unique<ForExprAST>(VarName, IsVarDecl, VarType, std::move(Start),
-                                 std::move(Cond), std::move(Step),
+  return make_unique<ForExprAST>(VariableName, DeclaresVariable, VarType, std::move(Start),
+                                 std::move(Cond), std::move(Update),
                                  std::move(Body));
 }
 
@@ -3251,7 +3251,7 @@ static unique_ptr<ExprAST> ParseSwitchStmt() {
 static unique_ptr<ExprAST> ParseVarStmt() {
   getNextToken(); // eat 'var'
 
-  vector<VarBinding> VarNames;
+  vector<VarBinding> VariableBindings;
   bool IsGlobalDecl = ParsingTopLevel;
 
   while (true) {
@@ -3310,7 +3310,7 @@ static unique_ptr<ExprAST> ParseVarStmt() {
       }
     }
 
-    VarNames.push_back({Name, DeclType, DeclStructName, std::move(Init)});
+    VariableBindings.push_back({Name, DeclType, DeclStructName, std::move(Init)});
     if (IsGlobalDecl) {
       GlobalVarTypes[Name] = DeclType;
       GlobalVarDecls.insert(Name);
@@ -3326,7 +3326,7 @@ static unique_ptr<ExprAST> ParseVarStmt() {
     getNextToken(); // eat ','
   }
 
-  return make_unique<VarStmtAST>(std::move(VarNames));
+  return make_unique<VarStmtAST>(std::move(VariableBindings));
 }
 
 /// ifstmt
@@ -4328,7 +4328,7 @@ static unique_ptr<ExprAST> ParseBlock() {
 
   consumeNewlines();
 
-  vector<unique_ptr<ExprAST>> Stmts;
+  vector<unique_ptr<ExprAST>> Statements;
   if (CurTok == tok_dedent)
     return LogError("Expected at least one statement in block");
 
@@ -4339,7 +4339,7 @@ static unique_ptr<ExprAST> ParseBlock() {
     auto Stmt = ParseStatement();
     if (!Stmt)
       return nullptr;
-    Stmts.push_back(std::move(Stmt));
+    Statements.push_back(std::move(Stmt));
 
     if (CurTok == tok_eol) {
       consumeNewlines();
@@ -4361,7 +4361,7 @@ static unique_ptr<ExprAST> ParseBlock() {
     return LogError("Expected end of block");
   getNextToken(); // eat DEDENT
 
-  return make_unique<BlockExprAST>(std::move(Stmts));
+  return make_unique<BlockExprAST>(std::move(Statements));
 }
 
 /// prototype
@@ -6093,11 +6093,11 @@ Value *LogErrorValue(const string &ErrorMessage) {
 /// CreateEntryBlockAlloca - Create a stack slot in the current function's
 /// entry block for a mutable variable.
 static AllocaInst *CreateEntryBlockAlloca(Function *TheFunction,
-                                          const string &VarName, ValueType Type,
+                                          const string &VariableName, ValueType Type,
                                           const string &StructName = "") {
   IRBuilder<> TmpB(&TheFunction->getEntryBlock(),
                    TheFunction->getEntryBlock().begin());
-  return TmpB.CreateAlloca(LLVMTypeFor(Type, StructName), nullptr, VarName);
+  return TmpB.CreateAlloca(LLVMTypeFor(Type, StructName), nullptr, VariableName);
 }
 
 static Constant *ZeroConstant(ValueType Type, const string &StructName = "") {
@@ -6913,20 +6913,20 @@ Value *IndexedFieldCompoundAssignmentExprAST::codegen() {
 /// AssignmentExprAST::codegen - Evaluate the RHS, store it into the variable's
 /// stack slot, and produce the assigned value.
 Value *AssignmentExprAST::codegen() {
-  Value *Val = Expr->codegen();
+  Value *Val = Expression->codegen();
   if (!Val)
     return nullptr;
-  Val = EmitImplicitCast(Val, Expr->getType(), getType());
+  Val = EmitImplicitCast(Val, Expression->getType(), getType());
   if (!Val)
     return LogErrorValue("Type mismatch in assignment");
 
-  auto VariableBinding = NamedValues.find(Name);
+  auto VariableBinding = NamedValues.find(VariableName);
   if (VariableBinding != NamedValues.end() && VariableBinding->second) {
     Builder->CreateStore(Val, VariableBinding->second);
     return Val;
   }
 
-  if (auto *GV = GetGlobalVariable(Name)) {
+  if (auto *GV = GetGlobalVariable(VariableName)) {
     Builder->CreateStore(Val, GV);
     return Val;
   }
@@ -7005,15 +7005,15 @@ Value *FieldCompoundAssignmentExprAST::codegen() {
 
 /// ReturnExprAST::codegen - Emit a return from the current function.
 Value *ReturnExprAST::codegen() {
-  if (!Expr) {
+  if (!Expression) {
     Builder->CreateRetVoid();
     return ConstantFP::get(*TheContext, APFloat(0.0));
   }
 
-  Value *RetVal = Expr->codegen();
+  Value *RetVal = Expression->codegen();
   if (!RetVal)
     return nullptr;
-  RetVal = EmitImplicitCast(RetVal, Expr->getType(), CurrentFunctionReturnType);
+  RetVal = EmitImplicitCast(RetVal, Expression->getType(), CurrentFunctionReturnType);
   if (!RetVal)
     return LogErrorValue("Type mismatch in return");
   Builder->CreateRet(RetVal);
@@ -7029,10 +7029,10 @@ Value *BlockExprAST::codegen() {
   auto SavedStructs = NamedValueStructNames;
 
   Value *Last = nullptr;
-  for (auto &Stmt : Stmts) {
+  for (auto &Statement : Statements) {
     if (Builder->GetInsertBlock()->getTerminator())
       break;
-    Last = Stmt->codegen();
+    Last = Statement->codegen();
     if (!Last) {
       NamedValues = SavedBindings;
       NamedValueTypes = SavedTypes;
@@ -7523,17 +7523,17 @@ Value *ForExprAST::codegen() {
   Value *VarPtr = nullptr;
   AllocaInst *Alloca = nullptr;
   AllocaInst *OldVal = nullptr;
-  if (IsVarDecl) {
-    Alloca = CreateEntryBlockAlloca(TheFunction, VarName, VarType);
-    EmitDebugDeclare(Alloca, VarName, CurFunctionLine, false, 0, VarType);
+  if (DeclaresVariable) {
+    Alloca = CreateEntryBlockAlloca(TheFunction, VariableName, VarType);
+    EmitDebugDeclare(Alloca, VariableName, CurFunctionLine, false, 0, VarType);
     VarPtr = Alloca;
-    NamedValueTypes[VarName] = VarType;
-    NamedValueStructNames.erase(VarName);
+    NamedValueTypes[VariableName] = VarType;
+    NamedValueStructNames.erase(VariableName);
   } else {
-    auto It = NamedValues.find(VarName);
+    auto It = NamedValues.find(VariableName);
     if (It != NamedValues.end() && It->second)
       VarPtr = It->second;
-    else if (auto *GV = GetGlobalVariable(VarName))
+    else if (auto *GV = GetGlobalVariable(VariableName))
       VarPtr = GV;
     else
       return LogErrorValue("Unknown variable name");
@@ -7561,9 +7561,9 @@ Value *ForExprAST::codegen() {
 
   Builder->SetInsertPoint(CondBB);
 
-  if (IsVarDecl) {
-    OldVal = NamedValues[VarName];
-    NamedValues[VarName] = Alloca;
+  if (DeclaresVariable) {
+    OldVal = NamedValues[VariableName];
+    NamedValues[VariableName] = Alloca;
   }
 
   Value *CondVal = Cond->codegen();
@@ -7591,19 +7591,19 @@ Value *ForExprAST::codegen() {
 
   Builder->SetInsertPoint(StepBB);
   // Execute the complete update expression; its value is discarded.
-  if (!Step->codegen())
+  if (!Update->codegen())
     return nullptr;
   Builder->CreateBr(CondBB);
 
   Builder->SetInsertPoint(AfterBB);
 
-  if (IsVarDecl) {
+  if (DeclaresVariable) {
     if (OldVal)
-      NamedValues[VarName] = OldVal;
+      NamedValues[VariableName] = OldVal;
     else
-      NamedValues.erase(VarName);
-    NamedValueTypes.erase(VarName);
-    NamedValueStructNames.erase(VarName);
+      NamedValues.erase(VariableName);
+    NamedValueTypes.erase(VariableName);
+    NamedValueStructNames.erase(VariableName);
   }
 
   return ConstantFP::get(*TheContext, APFloat(0.0));
@@ -7737,13 +7737,13 @@ Value *ContinueExprAST::codegen() {
 /// VarStmtAST::codegen - Allocate mutable local variables and initialize them.
 Value *VarStmtAST::codegen() {
   if (InGlobalInit) {
-    for (auto &Var : VarNames) {
-      const string &VarName = Var.Name;
+    for (auto &Var : VariableBindings) {
+      const string &VariableName = Var.Name;
       ValueType VarType = Var.Type;
       const string &VarStructName = Var.StructName;
       ExprAST *Init = Var.Init.get();
 
-      auto *GV = TheModule->getNamedGlobal(VarName);
+      auto *GV = TheModule->getNamedGlobal(VariableName);
       if (GV && !GV->isDeclaration())
         return LogErrorValue("Global variable already defined");
       if (GV && GV->getValueType() != LLVMTypeFor(VarType, VarStructName))
@@ -7753,12 +7753,12 @@ Value *VarStmtAST::codegen() {
         auto *Type = LLVMTypeFor(VarType, VarStructName);
         GV = new GlobalVariable(*TheModule, Type, false,
                                 GlobalValue::ExternalLinkage,
-                                ZeroConstant(VarType, VarStructName), VarName);
-        EmitDebugGlobal(GV, VarName, CurFunctionLine, VarType);
+                                ZeroConstant(VarType, VarStructName), VariableName);
+        EmitDebugGlobal(GV, VariableName, CurFunctionLine, VarType);
       } else if (GV->isDeclaration()) {
         GV->setInitializer(ZeroConstant(VarType, VarStructName));
         GV->setLinkage(GlobalValue::ExternalLinkage);
-        EmitDebugGlobal(GV, VarName, CurFunctionLine, VarType);
+        EmitDebugGlobal(GV, VariableName, CurFunctionLine, VarType);
       }
 
       ModuleHasGlobals = true;
@@ -7783,8 +7783,8 @@ Value *VarStmtAST::codegen() {
 
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
 
-  for (auto &Var : VarNames) {
-    const string &VarName = Var.Name;
+  for (auto &Var : VariableBindings) {
+    const string &VariableName = Var.Name;
     ValueType VarType = Var.Type;
     const string &VarStructName = Var.StructName;
     ExprAST *Init = Var.Init.get();
@@ -7802,15 +7802,15 @@ Value *VarStmtAST::codegen() {
     }
 
     AllocaInst *Alloca =
-        CreateEntryBlockAlloca(TheFunction, VarName, VarType, VarStructName);
+        CreateEntryBlockAlloca(TheFunction, VariableName, VarType, VarStructName);
     Builder->CreateStore(InitVal, Alloca);
-    NamedValues[VarName] = Alloca;
-    NamedValueTypes[VarName] = VarType;
+    NamedValues[VariableName] = Alloca;
+    NamedValueTypes[VariableName] = VarType;
     if (!VarStructName.empty())
-      NamedValueStructNames[VarName] = VarStructName;
+      NamedValueStructNames[VariableName] = VarStructName;
     else
-      NamedValueStructNames.erase(VarName);
-    EmitDebugDeclare(Alloca, VarName, CurFunctionLine, false, 0, VarType);
+      NamedValueStructNames.erase(VariableName);
+    EmitDebugDeclare(Alloca, VariableName, CurFunctionLine, false, 0, VarType);
   }
 
   return ConstantFP::get(*TheContext, APFloat(0.0));

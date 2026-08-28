@@ -1,0 +1,11 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -c "Error (Line" %t | grep -q "2"
+# RUN: grep -q "inconsistent indentation" %t
+# RUN: grep -q "Unexpected error" %t
+# RUN: not grep -q "Unexpected 'var'" %t
+
+# indentation: discard queued dedents and the rest of a malformed line
+def f():
+    if 1:
+        var x = 1
+   var y = 2

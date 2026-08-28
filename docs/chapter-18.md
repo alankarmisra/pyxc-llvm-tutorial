@@ -435,7 +435,7 @@ struct ExpectedLiteralTypeGuard {
 
 Four sites install a guard:
 
-- **`var` initializers.** `ParseVarStatement` installs the declared type so `var x: int32 = 5` parses `5` as `int32` directly.
+- **`var` initializers.** `ParseVariableStatement` installs the declared type so `var x: int32 = 5` parses `5` as `int32` directly.
 - **Assignment RHS.** `ParseAssignmentRight` looks up the type of the already-declared variable and installs it before parsing the right-hand side, so `x = 10` (where `x: int32`) parses `10` as `int32`.
 - **Function call arguments.** `ParseNameExpression` (the call parser) installs each parameter's declared type before parsing the corresponding argument expression.
 - **`return` expressions.** `ParseReturnStatement` installs the enclosing function's return type so `return 10` inside a `-> int32` function parses `10` as `int32`.
@@ -580,7 +580,7 @@ The `DefaultType` parameter is the key design decision:
 - `ParseFunctionDefinition` calls `ParseOptionalReturnType(ValueType::None)`: unannotated `def` is void.
 - `ParseExtern` calls `ParseOptionalReturnType()` (default `Float64`): extern declarations default to `float64` because they are typically C library functions.
 
-`ValueType::None` also serves as a placeholder type for all statement-like AST nodes that produce no meaningful value: `ReturnExpressionNode`, `BlockExpressionNode`, `ForExpressionNode`, `IfStatementNode`, and `VarStatementNode` all call `setType(ValueType::None)` in their constructors, and all override `shouldPrintValue()` to return `false`. This is the same pattern as the single-hierarchy AST design noted in chapter 12: in a clean Stmt/Expr split, statements would carry no type at all. Here, `None` is the convention that means "this node is a statement; its type is not meaningful."
+`ValueType::None` also serves as a placeholder type for all statement-like AST nodes that produce no meaningful value: `ReturnExpressionNode`, `BlockExpressionNode`, `ForExpressionNode`, `IfStatementNode`, and `VariableStatementNode` all call `setType(ValueType::None)` in their constructors, and all override `shouldPrintValue()` to return `false`. This is the same pattern as the single-hierarchy AST design noted in chapter 12: in a clean Stmt/Expr split, statements would carry no type at all. Here, `None` is the convention that means "this node is a statement; its type is not meaningful."
 
 ## Parsing Typed Parameters
 
@@ -691,7 +691,7 @@ var y: int32
 var a: int8, b: int16   # multiple bindings in one statement
 ```
 
-The colon-type is mandatory. `ParseVarStatement` reads it:
+The colon-type is mandatory. `ParseVariableStatement` reads it:
 
 ```cpp
 if (CurrentToken != ':')
@@ -793,7 +793,7 @@ operation and store:
 
 ```cpp
 // Execute the complete update expression; its value is discarded.
-if (!Step->codegen())
+if (!Update->codegen())
   return nullptr;
 TheBuilder->CreateBr(CondBB);
 ```

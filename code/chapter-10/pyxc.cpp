@@ -563,15 +563,15 @@ public:
 /// NamedValues). The expression always produces 0.0 — the loop is used for side
 /// effects.
 class ForExpressionNode : public ExpressionNode {
-  string VarName;
+  string VariableName;
   unique_ptr<ExpressionNode> Start, Condition, Step, Body;
 
 public:
-  ForExpressionNode(const string &VarName, unique_ptr<ExpressionNode> Start,
+  ForExpressionNode(const string &VariableName, unique_ptr<ExpressionNode> Start,
                     unique_ptr<ExpressionNode> Condition,
                     unique_ptr<ExpressionNode> Step,
                     unique_ptr<ExpressionNode> Body)
-      : VarName(VarName), Start(std::move(Start)),
+      : VariableName(VariableName), Start(std::move(Start)),
         Condition(std::move(Condition)), Step(std::move(Step)),
         Body(std::move(Body)) {}
 
@@ -765,7 +765,7 @@ static unique_ptr<ExpressionNode> ParseForExpression() {
 
   if (CurrentToken != tok_name)
     return LogErrorExpression("Expected variable name after 'for'");
-  string VarName = Name;
+  string VariableName = Name;
   getNextToken(); // eat name
 
   if (CurrentToken != tok_assign)
@@ -803,7 +803,7 @@ static unique_ptr<ExpressionNode> ParseForExpression() {
   if (!Body)
     return nullptr;
 
-  return make_unique<ForExpressionNode>(VarName, std::move(Start),
+  return make_unique<ForExpressionNode>(VariableName, std::move(Start),
                                         std::move(Condition), std::move(Step),
                                         std::move(Body));
 }
@@ -1415,12 +1415,12 @@ Value *ForExpressionNode::codegen() {
   // PHI picks start_val on the first iteration, next_i on subsequent ones.
   // The back-edge incoming value is added below once we know BodyEndBB.
   PHINode *Variable =
-      TheBuilder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VarName);
+      TheBuilder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VariableName);
   Variable->addIncoming(StartVal, PreheaderBB);
 
   // Shadow any outer variable of the same name so the body sees the loop var.
-  Value *OldVal = NamedValues[VarName];
-  NamedValues[VarName] = Variable;
+  Value *OldVal = NamedValues[VariableName];
+  NamedValues[VariableName] = Variable;
 
   // Evaluate the condition; treat 0.0 as false, anything else as true.
   Value *CondVal = Condition->codegen();
@@ -1454,9 +1454,9 @@ Value *ForExpressionNode::codegen() {
 
   // Restore the shadowed variable (if any) now that the loop is done.
   if (OldVal)
-    NamedValues[VarName] = OldVal;
+    NamedValues[VariableName] = OldVal;
   else
-    NamedValues.erase(VarName);
+    NamedValues.erase(VariableName);
 
   // The for expression always produces 0.0.
   return ConstantFP::get(*TheContext, APFloat(0.0));

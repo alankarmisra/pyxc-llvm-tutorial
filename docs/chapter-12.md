@@ -184,7 +184,9 @@ Three new token values:
 
 `tok_indent` and `tok_dedent` come from the lexer — I push them into `PendingTokens` when I detect a change in indentation. I never produce `tok_block_end` from the lexer; I have `ParseBlock` inject it into `PendingTokens` just before returning, so the calling parser sees it as `CurrentToken`. It's a signal I add to the token stream, not a character in the source.
 
-Three new AST node classes:
+New AST node classes:
+
+### `return`
 
 `ReturnStatementNode` — a `return` statement:
 
@@ -192,13 +194,16 @@ Three new AST node classes:
 /// ReturnStatementNode - Statement-like expression for return.
 /// Emits a function return and produces the returned value.
 class ReturnStatementNode : public ExpressionNode {
-  unique_ptr<ExpressionNode> Expr;
+  unique_ptr<ExpressionNode> Expression;
 
 public:
-  ReturnStatementNode(unique_ptr<ExpressionNode> Expr) : Expr(std::move(Expr)) {}
+  ReturnStatementNode(unique_ptr<ExpressionNode> Expression)
+      : Expression(std::move(Expression)) {}
   Value *codegen() override;
 };
 ```
+
+### Blocks
 
 `BlockStatementNode` — a sequence of statements evaluated in order:
 
@@ -206,81 +211,151 @@ public:
 /// BlockStatementNode - A sequence of statements evaluated in order.
 /// The block's value is the value of the last statement executed.
 class BlockStatementNode : public ExpressionNode {
-  vector<unique_ptr<ExpressionNode>> Stmts;
+  vector<unique_ptr<ExpressionNode>> Statements;
 
 public:
-  BlockStatementNode(vector<unique_ptr<ExpressionNode>> Stmts) : Stmts(std::move(Stmts)) {}
+  BlockStatementNode(vector<unique_ptr<ExpressionNode>> Statements)
+      : Statements(std::move(Statements)) {}
   Value *codegen() override;
 };
 ```
 
-`VarStatementNode` replaces [chapter 11](chapter-11.md)'s `VariableExpressionNode` and drops the body entirely — no more `: expression` tail. Variables declared here persist for the rest of the function, not just one expression:
+### `var`
+
+`VariableStatementNode` replaces [chapter 11](chapter-11.md)'s `VariableExpressionNode` and drops the body entirely — no more `: expression` tail. Variables declared here persist for the rest of the function, not just one expression:
+
+```cppdiff
+-/// VariableExpressionNode - Expression class for mutable local variable
+-/// bindings.
+-class VariableExpressionNode : public ExpressionNode {
+-  vector<pair<string, unique_ptr<ExpressionNode>>> VariableBindings;
+-  unique_ptr<ExpressionNode> Body;
+-
+-public:
+-  VariableExpressionNode(
+-      vector<pair<string, unique_ptr<ExpressionNode>>> VariableBindings,
+-      unique_ptr<ExpressionNode> Body)
+-      : VariableBindings(std::move(VariableBindings)), Body(std::move(Body)) {}
+-  Value *codegen() override;
+-};
+```
 
 ```cpp
-/// VarStatementNode - Statement form of mutable local variable bindings.
+/// VariableStatementNode - Statement form of mutable local variable bindings.
 ///   var a = <init>, b = <init>
 /// Each binding allocates stack storage in the current function's entry block
 /// and stores its initializer. Bindings persist for the rest of the function.
-class VarStatementNode : public ExpressionNode {
-  vector<pair<string, unique_ptr<ExpressionNode>>> VarNames;
+class VariableStatementNode : public ExpressionNode {
+  vector<pair<string, unique_ptr<ExpressionNode>>> VariableBindings;
 
 public:
-  VarStatementNode(vector<pair<string, unique_ptr<ExpressionNode>>> VarNames)
-      : VarNames(std::move(VarNames)) {}
+  VariableStatementNode(
+      vector<pair<string, unique_ptr<ExpressionNode>>> VariableBindings)
+      : VariableBindings(std::move(VariableBindings)) {}
   Value *codegen() override;
 };
 ```
 
-`IfStatementNode` replaces [chapter 10](chapter-10.md)'s `IfExpressionNode`. Since a statement doesn't need to produce a value, I drop the PHI node entirely and make `else` optional — a real behavior change, not just a rename.
+### `if`
+
+`IfStatementNode` replaces [chapter 10](chapter-10.md)'s `IfExpressionNode`. The field layout barely changes — `Else` was already a plain field, and stays one — but its meaning does: `Else` is now `nullptr` whenever the source omits an `else` clause, something chapter 10 never allowed:
+
+```cppdiff
+-/// IfExpressionNode - Expression class for if/else.
+-class IfExpressionNode : public ExpressionNode {
+-  unique_ptr<ExpressionNode> Condition, Then, Else;
+-
+-public:
+-  IfExpressionNode(unique_ptr<ExpressionNode> Condition,
+-                   unique_ptr<ExpressionNode> Then,
+-                   unique_ptr<ExpressionNode> Else)
+-      : Condition(std::move(Condition)), Then(std::move(Then)),
+-        Else(std::move(Else)) {}
+-  Value *codegen() override;
+-};
+```
+
+```cpp
+/// IfStatementNode - Statement form of if/else.
+/// Produces 0.0 and does not return a value.
+class IfStatementNode : public ExpressionNode {
+  unique_ptr<ExpressionNode> Condition, Then, Else;
+
+public:
+  IfStatementNode(unique_ptr<ExpressionNode> Condition, unique_ptr<ExpressionNode> Then,
+            unique_ptr<ExpressionNode> Else)
+      : Condition(std::move(Condition)), Then(std::move(Then)), Else(std::move(Else)) {}
+  Value *codegen() override;
+};
+```
+
+## pyxc Indentation Rules
+
+Similar to Python's, with one difference: pyxc allows mixing tabs and spaces (Python 3 disallows it).
+
+- Each space advances one column; each tab advances to the next multiple of 8.
+- Mixing tabs and spaces is allowed — the column count is what matters.
+- Dedenting to a column that was never opened is an error.
+- Blank lines and comment-only lines don't affect indentation in file mode. In REPL mode, a blank line closes the current block immediately.
+- A block opens after `:` followed by a newline and a deeper indentation level.
 
 ## INDENT and DEDENT
 
 A single counter isn't enough to track indentation — I need to remember every level I opened, for nested blocks. When indentation drops, I need to know which level I'm returning to, and how many blocks I'm closing at once. That's why I keep an `IndentStack` and a pending-token queue.
 
-At the start of each line, I find the indentation level, compare it to the top of the stack, and push `INDENT` or `DEDENT` tokens into the queue. When indentation drops by multiple levels in one step, I queue one `DEDENT` per level closed, and the parser drains them one at a time:
+At the start of each line, I find the indentation level and compare it to the top of the stack. An increase returns `INDENT` right away — no queue involved. A decrease is different: I queue one `DEDENT` per level closed and return only the first one, so a single line that closes several levels at once still gets drained by the parser one `DEDENT` at a time:
 
 ```pyxc
-def f(x):            # stack: [0]
-    if x > 0:        # stack: [0, 4]        → INDENT
-        if x > 10:   # stack: [0, 4, 8]     → INDENT
-            return x # stack: [0, 4, 8, 12] → INDENT
-    return 0         # col 4: three levels closed → DEDENT, DEDENT, DEDENT queued
-                     # stack drains back to [0, 4]; parser sees them one at a time
+def f(x):            # Stack: [0]         Pending: []
+    if x > 0:        # Stack: [0, 4]      Pending: []        → INDENT
+        if x > 10:   # Stack: [0, 4, 8]   Pending: []        → INDENT
+            return x # Stack: [0, 4, 8, 12]  Pending: []     → INDENT
+    return 0         # col 4 is less than both 12 and 8: two levels closed, two DEDENTs queued
+                     # Stack: [0, 4]      Pending: [DEDENT]  → returns the first DEDENT now
+                     # the second DEDENT stays queued; the next getToken() call drains it
+                     #   before it even looks at whatever line comes after "return 0"
 ```
 
 Blocks are also automatically closed at end of file — no trailing blank line needed:
 
 ```pyxc
 def f():
-    var x = 5        # stack: [0, 4] → INDENT
-    return x         # stack: [0, 4]   nothing
-# EOF                # col 0: stack has [0, 4] → DEDENT pushed into PendingTokens
-                     # parser drains it on the next getNextToken() call
+    var x = 5        # Stack: [0, 4]  Pending: []  → INDENT
+    return x         # Stack: [0, 4]  Pending: []    (same level, nothing happens)
+# EOF                # col 0: stack still holds [0, 4] → one DEDENT pushed into the pending queue
+                     # the parser drains it on the next getNextToken() call
 ```
+
+Let's start by defining the structures we need to track indents/dedents.
 
 ```cpp
 static vector<int> IndentStack = {0}; // starts at column 0
 static deque<int>  PendingTokens;     // buffered tokens the parser hasn't seen yet
 static bool AtLineStart = true;       // true right after a newline
+static constexpr int IndentTabWidth = 8; // tab width
 ```
 
 Inside `getToken()`, I process indentation at the start of every line, before any normal token logic.
 
 **Step 1: Find the indentation level of the current line.**
 
-```cpp
-if (AtLineStart) {
-  // Prime sentinel space once so indentation scans real input.
-  if (LastChar == ' ')
-    LastChar = advance();
-  int CurrentIndentRead = 0;
-  while (LastChar == ' ' || LastChar == '\t') {
-    CurrentIndentRead +=
-        (LastChar == ' ')
-            ? 1
-            : (IndentTabWidth - CurrentIndentRead % IndentTabWidth);
-    LastChar = advance();
-  }
+This is the start of `getToken()` itself — the indentation check comes before any other token logic, right after the multi-level-dedent drain from `PendingTokens`:
+
+```cppdiff
+~static int getToken() {
+~  static int LastChar = ' ';
+
++// ── Line-start: count indentation, emit INDENT / DEDENT ──────────────
++  if (AtLineStart) {
++    // Prime sentinel space once so indentation scans real input.
++    if (LastChar == ' ')
++      LastChar = advance();
++    int CurrentIndentRead = 0;
++    while (LastChar == ' ' || LastChar == '\t') {
++      CurrentIndentRead += (LastChar == ' ')
++              ? 1 : (IndentTabWidth - CurrentIndentRead % IndentTabWidth);
++      LastChar = advance();
++    }
 ```
 
 `IndentTabWidth` is `8`. Spaces contribute 1 column each. Tabs advance to the next multiple of `IndentTabWidth` — the delta is `IndentTabWidth - (CurrentIndentRead % IndentTabWidth)`:
@@ -299,32 +374,128 @@ For a blank line or a comment-only line, I return `tok_eol` here without touchin
 
 **Step 2: Compare to the top of the stack and either return `tok_indent` directly or queue `DEDENT` tokens.**
 
-```cpp
-  CurrentTokenLocation = LexerLocation;
-  int CurrentIndentOnStack = IndentStack.back();
-  if (CurrentIndentRead > CurrentIndentOnStack) {
-    IndentStack.push_back(CurrentIndentRead);
-    AtLineStart = false;
-    return tok_indent;
-  }
-  if (CurrentIndentRead < CurrentIndentOnStack) {
-    while (IndentStack.size() > 1 && CurrentIndentRead < IndentStack.back()) {
-      IndentStack.pop_back();
-      PendingTokens.push_back(tok_dedent);
-    }
-    if (CurrentIndentRead != IndentStack.back()) {
-      LogErrorAtLoc("inconsistent indentation", CurrentTokenLocation);
-      PrintErrorSourceContext(CurrentTokenLocation);
-      return tok_error;
-    }
-    AtLineStart = false;
-    int Tok = PendingTokens.front();
-    PendingTokens.pop_front();
-    return Tok;
-  }
-  // Same indentation level — no indent/dedent token needed.
-  AtLineStart = false;
+```cppdiff
+~      CurrentIndentRead ~= (LastChar == ' ')
+~              ? 1 : (IndentTabWidth - CurrentIndentRead % IndentTabWidth);
+~      LastChar = advance();
+~    }
+~
++  CurrentTokenLocation = LexerLocation;
++  int CurrentIndentOnStack = IndentStack.back();
++
++  // I see an indent: I remember the new level and open a block.
++  if (CurrentIndentRead > CurrentIndentOnStack) {
++    IndentStack.push_back(CurrentIndentRead);
++    AtLineStart = false;
++    return tok_indent;
++  }
++
++  // I see a dedent: I close blocks until I reach the new level.
++  if (CurrentIndentRead < CurrentIndentOnStack) {
++    while (IndentStack.size() > 1 && CurrentIndentRead < IndentStack.back()) {
++      IndentStack.pop_back();
++      PendingTokens.push_back(tok_dedent);
++    }
++    if (CurrentIndentRead != IndentStack.back()) {
++      LogErrorAtLoc("inconsistent indentation", CurrentTokenLocation);
++      PrintErrorSourceContext(CurrentTokenLocation);
++      PendingTokens.clear();
++      AtLineStart = false;
++      return tok_error;
++    }
++    AtLineStart = false;
++    int Tok = PendingTokens.front();
++    PendingTokens.pop_front();
++    return Tok;
++  }
++
++  // Same indentation level — no indent/dedent token needed.
++  AtLineStart = false;
 ```
+
+**Step 3: On the next call, drain the rest of the queue before doing anything else.**
+
+I leave any `DEDENT` tokens from a multi-level dedent, or from Step 2's queuing, sitting in `PendingTokens` for the next call to consume. I check for them right at the top of `getToken()`, before the line-start logic even runs:
+
+```cppdiff
+~static int getToken() {
+~  static int LastChar = ' ';
+~
++  // Drain tokens queued by a multi-level dedent on the previous line.
++  if (!PendingTokens.empty()) {
++    int Tok = PendingTokens.front();
++    PendingTokens.pop_front();
++    return Tok;
++  }
+~
+~  CurrentTokenLocation = LexerLocation;
+~  int CurrentIndentOnStack = IndentStack.back();
+```
+
+I call `getToken()` again for each subsequent token, and each call drains one more entry from the queue before I return to normal lexing.
+
+At EOF, the lexer flushes one `DEDENT` per still-open block:
+
+```cppdiff
+~static int getToken() {
+~  ...
+~  if (AtLineStart) {
+~    ...
++    // EOF (with or without trailing newline): flush open blocks one at a time.
++    if (LastChar == EOF) {
++      if (IndentStack.size() > 1) {
++        IndentStack.pop_back();
++        return tok_dedent;
++      }
++      return tok_eof;
++    }
+~    ...
+~  }
+~  ...
+~}
+```
+
+Two more checks happen before that one, inside the same block — a blank line, and a comment-only line:
+
+```cppdiff
+~static int getToken() {
+~  ...
+~  if (AtLineStart) {
+~    ...
++    // Blank line: ignore in file mode; close the block immediately in REPL.
++    if (LastChar == '\n') {
++      if (IsRepl && IndentStack.size() > 1) {
++        IndentStack.pop_back();
++        return tok_dedent;
++      }
++      CurrentTokenLocation = LexerLocation;
++      LastChar = ' ';
++      return tok_eol;
++    }
++
++    // Comment-only line: consume and return a newline.
++    if (LastChar == '#') {
++      do {
++        LastChar = advance();
++      } while (LastChar != '\n' && LastChar != EOF);
++      if (LastChar == '\n') {
++        CurrentTokenLocation = LexerLocation;
++        LastChar = ' ';
++        return tok_eol;
++      }
++      // else fall through to EOF handling below
++    }
+~    ...
+~  }
+~  ...
+~}
+```
+
+A blank line in file mode is just `tok_eol` — I don't touch the indent stack, so nothing about the surrounding blocks changes. In the REPL, a blank line ends the current block immediately instead: I can't count on an actual dedented line ever showing up, since the user might just hit Enter twice to say "I'm done with this block," so I treat the blank line itself as that signal — the same behavior as the Python REPL.
+
+A comment-only line is simpler still: I consume everything up to the newline and return `tok_eol`, same as a blank line, indent stack untouched. If the comment runs to the end of the file with no trailing newline, `LastChar` is now `EOF` — that's the fallthrough the comment refers to, and it's exactly the EOF handling I covered above.
+
+### Inconsistent indentation
 
 When indentation increases, I never go through `PendingTokens` at all — I return `tok_indent` immediately. When it decreases, I can close several levels at once: for each closed level, I push one `tok_dedent` onto `PendingTokens`, and I return the first one from this call. I drain the rest on later calls to `getToken()`, through the check at the very top of the function (see Step 3 below). A single dedent can therefore produce multiple `DEDENT` tokens — one for each level I close:
 
@@ -340,58 +511,15 @@ Error (Line 3, Column 4): inconsistent indentation
    ^~~~
    v
    ^~~~
-Error (Line 3, Column 4): unknown token when expecting an expression
+Error (Line 3, Column 4): Unexpected error
    v
-   ^~~~
-Error (Line 3, Column 4): unknown token when expecting an expression
-   var 
    ^~~~
 ```
 <!-- code-merge:end -->
 
-Dedenting to column 3 has no match on the stack (`[0, 4]`) — it's neither the current indentation nor an outer one, so there's no consistent level to return to. I report it and return `tok_error`, but I don't stop there — I let the parser keep trying to recover from the malformed token stream, which is why one bad indent produces several cascading error lines instead of just the first one.
+Dedenting to column 3 has no match on the stack (`[0, 4]`) — it's neither the current indentation nor an outer one, so there's no consistent level to return to. By the time I discover that, I may already have queued one or more `DEDENT` tokens while searching the stack. Those tokens do not describe a valid transition, so I clear them before returning `tok_error`. I also set `AtLineStart` to `false` because the lexer has already consumed the line's leading whitespace. Without that reset, recovery can mistake the remaining text for the beginning of another line and lex it a second time.
 
-**Step 3: On the next call, drain the rest of the queue before doing anything else.**
-
-I leave any `DEDENT` tokens from a multi-level dedent, or from Step 2's queuing, sitting in `PendingTokens` for the next call to consume. I check for them right at the top of `getToken()`, before the line-start logic even runs:
-
-```cpp
-static int getToken() {
-  static int LastChar = ' ';
-
-  // Drain tokens queued by a multi-level dedent on the previous line.
-  if (!PendingTokens.empty()) {
-    int Tok = PendingTokens.front();
-    PendingTokens.pop_front();
-    return Tok;
-  }
-```
-
-I call `getToken()` again for each subsequent token, and each call drains one more entry from the queue before I return to normal lexing.
-
-At EOF, the lexer flushes one `DEDENT` per still-open block (still inside the `if (AtLineStart)` block from Step 1):
-
-```cpp
-if (LastChar == EOF) {
-  if (IndentStack.size() > 1) {
-    IndentStack.pop_back();
-    return tok_dedent;
-  }
-  return tok_eof;
-}
-```
-
-In REPL mode, I end the current indented block immediately on a blank line — the same behavior as the Python REPL.
-
-## pyxc Indentation Rules
-
-Similar to Python's, with one difference: pyxc allows mixing tabs and spaces (Python 3 disallows it).
-
-- Each space advances one column; each tab advances to the next multiple of 8.
-- Mixing tabs and spaces is allowed — the column count is what matters.
-- Dedenting to a column that was never opened is an error.
-- Blank lines and comment-only lines don't affect indentation in file mode. In REPL mode, a blank line closes the current block immediately.
-- A block opens after `:` followed by a newline and a deeper indentation level.
+The parser still reports `Unexpected error` after the lexer reports the inconsistent indentation. That is the normal boundary between the two layers: the lexer returns `tok_error`, and the parser reports that the token cannot begin the statement it was parsing. The important part is that recovery now consumes the rest of the malformed line instead of exposing its remaining tokens as a bogus new statement.
 
 ## Parse-Time Variable Tracking
 
@@ -403,7 +531,7 @@ ready> x = 1
 ```
 ```text
 Error (Line 1, Column 3): Assignment to undeclared variable
-x = 
+x =
   ^~~~
 ```
 <!-- code-merge:end -->
@@ -469,7 +597,7 @@ ready> def f():
 ```
 ```text
 Error (Line 3, Column 11): Variable 'x' already declared in this scope
-    var x = 
+    var x =
           ^~~~
 ```
 <!-- code-merge:end -->
@@ -500,13 +628,13 @@ static unique_ptr<ExpressionNode> ParseForStatement() {
   getNextToken(); // eat 'for'
   // ... parse optional 'var', the loop variable name, and its scope check ...
 
-  unique_ptr<ExpressionNode> Start, Condition, Step, Body;
+  unique_ptr<ExpressionNode> Start, Condition, Update, Body;
 
   unique_ptr<LoopScopeGuard> LoopScope;
-  if (IsVarDecl)
-    LoopScope = make_unique<LoopScopeGuard>(VarName);
+  if (DeclaresVariable)
+    LoopScope = make_unique<LoopScopeGuard>(VariableName);
 
-  if (!ParseForParts(Start, Condition, Step, Body))
+  if (!ParseForParts(Start, Condition, Update, Body))
     return nullptr;
   // ...
 }
@@ -550,7 +678,7 @@ static unique_ptr<ExpressionNode> ParseBlock() {
   if (CurrentToken == tok_dedent)
     return LogErrorExpression("Expected at least one statement in block");
 
-  vector<unique_ptr<ExpressionNode>> Stmts;
+  vector<unique_ptr<ExpressionNode>> Statements;
 
   while (true) {
     if (CurrentToken == tok_dedent)
@@ -559,7 +687,7 @@ static unique_ptr<ExpressionNode> ParseBlock() {
     auto Stmt = ParseStatement();
     if (!Stmt)
       return nullptr;
-    Stmts.push_back(std::move(Stmt));
+    Statements.push_back(std::move(Stmt));
 
     if (CurrentToken == tok_eol) {
       consumeNewlines();
@@ -584,7 +712,7 @@ static unique_ptr<ExpressionNode> ParseBlock() {
   PendingTokens.push_front(tok_block_end);
   getNextToken(); // → CurrentToken = tok_block_end
 
-  return make_unique<BlockStatementNode>(std::move(Stmts));
+  return make_unique<BlockStatementNode>(std::move(Statements));
 }
 ```
 
@@ -663,7 +791,7 @@ static unique_ptr<ExpressionNode> ParseSimpleStatement() {
   if (CurrentToken == tok_return)
     return ParseReturnStatement();
   if (CurrentToken == tok_var)
-    return ParseVarStatement();
+    return ParseVariableStatement();
   if (CurrentToken == tok_name)
     return ParseLeadingNameSimpleStatement();
   return ParseNonLeadingNameSimpleStatement();
@@ -725,10 +853,10 @@ I reject assignment to an undeclared variable right here, at parse time — no c
 `var` in this chapter has no body. It declares one or more names that persist for the rest of the function:
 
 ```cpp
-static unique_ptr<ExpressionNode> ParseVarStatement() {
+static unique_ptr<ExpressionNode> ParseVariableStatement() {
   getNextToken(); // eat 'var'
 
-  vector<pair<string, unique_ptr<ExpressionNode>>> VarNames;
+  vector<pair<string, unique_ptr<ExpressionNode>>> VariableBindings;
 
   while (true) {
     if (CurrentToken != tok_name)
@@ -751,7 +879,7 @@ static unique_ptr<ExpressionNode> ParseVarStatement() {
       Init = make_unique<NumberExpressionNode>(0.0);
     }
 
-    VarNames.push_back({ParsedName, std::move(Init)});
+    VariableBindings.push_back({ParsedName, std::move(Init)});
     DeclareVar(ParsedName);
 
     if (CurrentToken != tok_comma)
@@ -759,7 +887,7 @@ static unique_ptr<ExpressionNode> ParseVarStatement() {
     getNextToken(); // eat ','
   }
 
-  return make_unique<VarStatementNode>(std::move(VarNames));
+  return make_unique<VariableStatementNode>(std::move(VariableBindings));
 }
 ```
 
@@ -781,7 +909,7 @@ In `ReturnStatementNode::codegen`, I emit a real LLVM terminator — a `ret` ins
 
 ```cpp
 Value *ReturnStatementNode::codegen() {
-  Value *RetVal = Expr->codegen();
+  Value *RetVal = Expression->codegen();
   if (!RetVal)
     return nullptr;
 
@@ -799,10 +927,10 @@ Value *BlockStatementNode::codegen() {
   auto SavedBindings = NamedValues;
 
   Value *Last = nullptr;
-  for (auto &Stmt : Stmts) {
+  for (auto &Statement : Statements) {
     if (TheBuilder->GetInsertBlock()->getTerminator())
       break;
-    Last = Stmt->codegen();
+    Last = Statement->codegen();
     if (!Last) {
       NamedValues = SavedBindings;
       return nullptr;
@@ -822,23 +950,23 @@ Value *BlockStatementNode::codegen() {
 
 ## `var` and Assignment Codegen
 
-In `VarStatementNode::codegen`, I allocate stack slots and initialize them. Since I already catch duplicate declarations in the same scope at parse time, codegen here just sets up the alloca and records the binding:
+In `VariableStatementNode::codegen`, I allocate stack slots and initialize them. Since I already catch duplicate declarations in the same scope at parse time, codegen here just sets up the alloca and records the binding:
 
 ```cpp
-Value *VarStatementNode::codegen() {
+Value *VariableStatementNode::codegen() {
   Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
 
-  for (auto &Var : VarNames) {
-    const string &VarName = Var.first;
+  for (auto &Var : VariableBindings) {
+    const string &VariableName = Var.first;
     ExpressionNode *Init = Var.second.get();
 
     Value *InitVal = Init->codegen();
     if (!InitVal)
       return nullptr;
 
-    AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
+    AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VariableName);
     TheBuilder->CreateStore(InitVal, Alloca);
-    NamedValues[VarName] = Alloca;
+    NamedValues[VariableName] = Alloca;
   }
 
   return ConstantFP::get(*TheContext, APFloat(0.0)); // var statement produces 0.0
@@ -849,7 +977,7 @@ Assignment codegen is unchanged in substance from [chapter 11](chapter-11.md) �
 
 ## `if` as a Statement
 
-[Chapter 4](chapter-04.md) had `if` producing a value through a PHI node, with both `then` and `else` required. `IfStatementNode` doesn't need to produce a value, so I drop the PHI node and make `else` optional — if it's missing, the else block just falls through to the merge block:
+[Chapter 10](chapter-10.md) had `if` producing a value through a PHI node, with both `then` and `else` required. `IfStatementNode` doesn't need to produce a value, so I drop the PHI node and make `else` optional — if it's missing, the else block just falls through to the merge block:
 
 ```cpp
 Value *IfStatementNode::codegen() {

@@ -158,15 +158,16 @@ Two new AST nodes do the real work.
 
 ```cpp
 /// AssignmentExpressionNode - Expression class for assignment to an existing variable.
-/// The expression stores Expr into the named variable and produces the assigned
-/// value.
+/// The expression stores the right-hand value into the named variable and
+/// produces the assigned value.
 class AssignmentExpressionNode : public ExpressionNode {
-  string Name;
-  unique_ptr<ExpressionNode> Expr;
+  string VariableName;
+  unique_ptr<ExpressionNode> Expression;
 
 public:
-  AssignmentExpressionNode(const string &Name, unique_ptr<ExpressionNode> Expr)
-      : Name(Name), Expr(std::move(Expr)) {}
+  AssignmentExpressionNode(const string &VariableName,
+                           unique_ptr<ExpressionNode> Expression)
+      : VariableName(VariableName), Expression(std::move(Expression)) {}
   Value *codegen() override;
 };
 ```
@@ -180,14 +181,14 @@ public:
 /// stores its initializer, shadows any outer binding of the same name for the
 /// duration of the body, then restores the old binding afterward.
 class VariableExpressionNode : public ExpressionNode {
-  vector<pair<string, unique_ptr<ExpressionNode>>> VarNames;
+  vector<pair<string, unique_ptr<ExpressionNode>>> VariableBindings;
   unique_ptr<ExpressionNode> Body;
 
 public:
   VariableExpressionNode(
-    vector<pair<string, unique_ptr<ExpressionNode>>> VarNames,
+    vector<pair<string, unique_ptr<ExpressionNode>>> VariableBindings,
     unique_ptr<ExpressionNode> Body)
-      : VarNames(std::move(VarNames)), Body(std::move(Body)) {}
+      : VariableBindings(std::move(VariableBindings)), Body(std::move(Body)) {}
   Value *codegen() override;
 };
 ```
@@ -228,14 +229,14 @@ public:
 static unique_ptr<ExpressionNode> ParseVariableExpression() {
   getNextToken(); // eat 'var'
 
-  vector<pair<string, unique_ptr<ExpressionNode>>> VarNames;
+  vector<pair<string, unique_ptr<ExpressionNode>>> VariableBindings;
 ```
 
 **Step 2: Parse each binding — a name, then an optional initializer.**
 
 ```cppdiff
 *  getNextToken(); // eat 'var'
-*  vector<pair<string, unique_ptr<ExpressionNode>>> VarNames;
+*  vector<pair<string, unique_ptr<ExpressionNode>>> VariableBindings;
 +
 +  while (true) {
 +    if (CurrentToken != tok_name)
@@ -255,7 +256,7 @@ static unique_ptr<ExpressionNode> ParseVariableExpression() {
 +      Init = make_unique<NumberExpressionNode>(0.0);
 +    }
 +
-+    VarNames.push_back({ParsedName, std::move(Init)});
++    VariableBindings.push_back({ParsedName, std::move(Init)});
 ```
 
 If there's no `=`, the variable defaults to `0.0`. The binding always produces a value, so what follows never has to special-case a missing initializer.
@@ -264,7 +265,7 @@ If there's no `=`, the variable defaults to `0.0`. The binding always produces a
 
 ```cppdiff
 *    }
-*    VarNames.push_back({ParsedName, std::move(Init)});
+*    VariableBindings.push_back({ParsedName, std::move(Init)});
 +
 +    if (CurrentToken != tok_comma)
 +      break;
@@ -288,7 +289,7 @@ If there's no `=`, the variable defaults to `0.0`. The binding always produces a
 +  if (!Body)
 +    return nullptr;
 +
-+  return make_unique<VariableExpressionNode>(std::move(VarNames), std::move(Body));
++  return make_unique<VariableExpressionNode>(std::move(VariableBindings), std::move(Body));
 +}
 ```
 
@@ -420,10 +421,10 @@ One difference: in C++, `&x` assumes `x` already exists as a variable, and you'r
 /// CreateEntryBlockAlloca - Create a memory slot in the current function's
 /// entry block for a mutable variable.
 static AllocaInst *CreateEntryBlockAlloca(Function *TheFunction,
-                                          const string &VarName) {
+                                          const string &VariableName) {
   IRBuilder<> TmpB(&TheFunction->getEntryBlock(),
                    TheFunction->getEntryBlock().begin());
-  return TmpB.CreateAlloca(Type::getDoubleTy(*TheContext), nullptr, VarName);
+  return TmpB.CreateAlloca(Type::getDoubleTy(*TheContext), nullptr, VariableName);
 }
 ```
 
@@ -498,6 +499,51 @@ With `CreateEntryBlockAlloca` in hand, creating a slot, storing into it, and rec
 
 From here on, every variable reference is a load from its slot, and every assignment is a store into it. That's the entire core implementation change — everything else in this chapter is wiring load/store into the right places.
 
+### Create, Load, Store, All Together
+
+Three calls cover the entire alloca lifecycle. Given a slot for `x`:
+
+Reserve the slot — nothing in it yet:
+
+```cpp
+AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, "x");
+```
+
+Write a value into it:
+
+```cpp
+TheBuilder->CreateStore(ConstantFP::get(*TheContext, APFloat(5.0)), Alloca);
+```
+
+Read whatever's currently in it:
+
+```cpp
+Value *Val = TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), Alloca, "x");
+```
+
+Reserve, write, read — that's the whole vocabulary pyxc needs for mutable state. `def one(): var x = 5: x` runs exactly these three calls, in exactly this order:
+
+```llvm
+define double @one() {
+entry:
+  %x = alloca double, align 8
+  store double 5.000000e+00, ptr %x, align 8
+  %x1 = load double, ptr %x, align 8
+  ret double %x1
+}
+```
+
+`mem2reg` looks at `%x` and asks one question: does its address ever escape this function — get handed to something else that might store through it later? Here, no — `%x` is only ever stored to and loaded from, right in this one block. So `mem2reg` deletes the alloca outright and substitutes the value that was stored wherever the load was used:
+
+```llvm
+define double @one() {
+entry:
+  ret double 5.000000e+00
+}
+```
+
+One alloca, one store, one load, and after `mem2reg` all three are gone — replaced by the value they were only ever going to produce anyway.
+
 ## Loading and Storing Variables
 
 Once names map to memory slots, I turn reading and writing a variable into an explicit load and store.
@@ -537,13 +583,13 @@ An assignment evaluates the right-hand side, stores it into the memory slot, and
 /// AssignmentExpressionNode::codegen - Evaluate the Right, store it into the variable's
 /// memory slot, and produce the assigned value.
 Value *AssignmentExpressionNode::codegen() {
-  Value *Value = Expr->codegen();
+  Value *Value = Expression->codegen();
   if (!Value)
     return nullptr;
 
-  auto VariableBinding = NamedValues.find(Name);
+  auto VariableBinding = NamedValues.find(VariableName);
   if (VariableBinding == NamedValues.end() || !VariableBinding->second)
-    return LogErrorValue("Unknown variable name: '" + Name + "'");
+    return LogErrorValue("Unknown variable name: '" + VariableName + "'");
 
   TheBuilder->CreateStore(Value, VariableBinding->second);
   return Value;
@@ -567,26 +613,26 @@ Value *VariableExpressionNode::codegen() {
   vector<pair<string, AllocaInst *>> OldBindings;
   Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
 
-  for (auto &Var : VarNames) {
-    const string &VarName = Var.first;
+  for (auto &Var : VariableBindings) {
+    const string &VariableName = Var.first;
     ExpressionNode *Init = Var.second.get();
 
     Value *InitVal = Init->codegen(); // evaluate before installing the binding
     if (!InitVal)
       return nullptr;
 
-    AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
+    AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VariableName);
     TheBuilder->CreateStore(InitVal, Alloca);
 ```
 
 **Step 2: Install the new binding, saving any shadowed outer binding.**
 
 ```cppdiff
-*    AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
+*    AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VariableName);
 *    TheBuilder->CreateStore(InitVal, Alloca);
 +
-+    OldBindings.push_back({VarName, NamedValues[VarName]});
-+    NamedValues[VarName] = Alloca; // shadow any outer binding
++    OldBindings.push_back({VariableName, NamedValues[VariableName]});
++    NamedValues[VariableName] = Alloca; // shadow any outer binding
 +  }
 ```
 
@@ -608,7 +654,7 @@ store double %addtmp, ptr %x, align 8
 ```
 
 ```cppdiff
-*    NamedValues[VarName] = Alloca; // shadow any outer binding
+*    NamedValues[VariableName] = Alloca; // shadow any outer binding
 *  }
 +
 +  Value *BodyVal = Body->codegen();
@@ -646,28 +692,29 @@ This unifies the whole language: parameters, `var` locals, and loop variables al
 
 ## `for` Loops Switch to the Same Model
 
-The old `for` codegen bound the loop variable directly to the incoming `Value*`, using a PHI node to merge the start value with each iteration's next value. That no longer fits now that every mutable local uses an alloca. `for var i` needs a fresh slot; plain `for i` needs to reuse the slot of an `i` already in scope — so I first record which case I'm in with a new `IsVarDecl` field on `ForExpressionNode` itself:
-
-The constructor's parameter list and initializer list are reflowed below, one entry per line, so the one real addition to each is easy to spot — the real source wraps these lines differently:
+The old `for` codegen bound the loop variable directly to the incoming `Value*`, using a PHI node to merge the start value with each iteration's next value. That no longer fits now that every mutable local uses an alloca. `for var i` needs a fresh slot; plain `for i` needs to reuse the slot of an `i` already in scope — so I first record which case I'm in with a new `DeclaresVariable` field on `ForExpressionNode` itself:
 
 ```cppdiff
 *class ForExpressionNode : public ExpressionNode {
-*  string VarName;
-+  bool IsVarDecl;
-*  unique_ptr<ExpressionNode> Start, Condition, Step, Body;
+*  string VariableName;
++  bool DeclaresVariable;
+-  unique_ptr<ExpressionNode> Start, Condition, Step, Body;
++  unique_ptr<ExpressionNode> Start, Condition, Update, Body;
 *
 *public:
-*  ForExpressionNode(const string &VarName,
-+                    bool IsVarDecl,
+*  ForExpressionNode(const string &VariableName,
++                    bool DeclaresVariable,
 *                    unique_ptr<ExpressionNode> Start,
 *                    unique_ptr<ExpressionNode> Condition,
-*                    unique_ptr<ExpressionNode> Step,
+-                    unique_ptr<ExpressionNode> Step,
++                    unique_ptr<ExpressionNode> Update,
 *                    unique_ptr<ExpressionNode> Body)
-*      : VarName(VarName),
-+        IsVarDecl(IsVarDecl),
+*      : VariableName(VariableName),
++        DeclaresVariable(DeclaresVariable),
 *        Start(std::move(Start)),
 *        Condition(std::move(Condition)),
-*        Step(std::move(Step)),
+-        Step(std::move(Step)),
++        Update(std::move(Update)),
 *        Body(std::move(Body)) {}
 -
 *  Value *codegen() override;
@@ -680,15 +727,15 @@ The constructor's parameter list and initializer list are reflowed below, one en
 *static unique_ptr<ExpressionNode> ParseForExpression() {
 *  getNextToken(); // eat 'for'
 *
-+  bool IsVarDecl = false;
++  bool DeclaresVariable = false;
 +  if (CurrentToken == tok_var) {
-+    IsVarDecl = true;
++    DeclaresVariable = true;
 +    getNextToken(); // optional 'var'
 +  }
 +
 *  if (CurrentToken != tok_name)
 *    return LogErrorExpression("Expected variable name after 'for'");
-*  string VarName = Name;
+*  string VariableName = Name;
 *  getNextToken(); // eat name
 *
 * ...
@@ -697,16 +744,16 @@ The constructor's parameter list and initializer list are reflowed below, one en
 *  if (!Body)
 *    return nullptr;
 *
--  return make_unique<ForExpressionNode>(VarName, std::move(Start),
+-  return make_unique<ForExpressionNode>(VariableName, std::move(Start),
 -                                        std::move(Condition), std::move(Step),
 -                                        std::move(Body));
-+  return make_unique<ForExpressionNode>(VarName, IsVarDecl, std::move(Start),
-+                                        std::move(Condition), std::move(Step),
++  return make_unique<ForExpressionNode>(VariableName, DeclaresVariable, std::move(Start),
++                                        std::move(Condition), std::move(Update),
 +                                        std::move(Body));
 *}
 ```
 
-Then I switch `ForExpressionNode::codegen` to a memory slot for the loop variable, using `IsVarDecl` to decide whether to allocate a fresh slot or reuse an existing one:
+Then I switch `ForExpressionNode::codegen` to a memory slot for the loop variable, using `DeclaresVariable` to decide whether to allocate a fresh slot or reuse an existing one:
 
 ```cppdiff
 *Value *ForExpressionNode::codegen() {
@@ -720,22 +767,22 @@ Then I switch `ForExpressionNode::codegen` to a memory slot for the loop variabl
 -  BasicBlock *PreheaderBB = TheBuilder->GetInsertBlock();
 +  AllocaInst *LoopVariableSlot = nullptr;
 +  AllocaInst *PreviousVariableSlot = nullptr;
-+  if (IsVarDecl) {
++  if (DeclaresVariable) {
 +    // With `for var`, I declare a new loop variable. I save any binding it
 +    // shadows so I can restore that binding after the loop, then I create the
 +    // new slot.
-+    auto PreviousBinding = NamedValues.find(VarName);
++    auto PreviousBinding = NamedValues.find(VariableName);
 +    if (PreviousBinding != NamedValues.end())
 +      PreviousVariableSlot = PreviousBinding->second;
-+    LoopVariableSlot = CreateEntryBlockAlloca(TheFunction, VarName);
++    LoopVariableSlot = CreateEntryBlockAlloca(TheFunction, VariableName);
 +    TheBuilder->CreateStore(StartVal, LoopVariableSlot);
-+    NamedValues[VarName] = LoopVariableSlot;
++    NamedValues[VariableName] = LoopVariableSlot;
 +  } else {
 +    // Without `var`, I reuse a variable that already exists. If the lookup
 +    // fails, I report an unknown-variable error.
-+    auto ExistingBinding = NamedValues.find(VarName);
++    auto ExistingBinding = NamedValues.find(VariableName);
 +    if (ExistingBinding == NamedValues.end() || !ExistingBinding->second)
-+      return LogErrorValue("Unknown variable name: '" + VarName + "'");
++      return LogErrorValue("Unknown variable name: '" + VariableName + "'");
 +    LoopVariableSlot = ExistingBinding->second;
 +    TheBuilder->CreateStore(StartVal, LoopVariableSlot);
 +  }
@@ -757,12 +804,12 @@ Then I switch `ForExpressionNode::codegen` to a memory slot for the loop variabl
 -  // PHI picks start_val on the first iteration, next_i on subsequent ones.
 -  // The back-edge incoming value is added below once we know BodyEndBB.
 -  PHINode *Variable =
--      TheBuilder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VarName);
+-      TheBuilder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VariableName);
 -  Variable->addIncoming(StartVal, PreheaderBB);
 -
 -  // Shadow any outer variable of the same name so the body sees the loop var.
--  Value *OldVal = NamedValues[VarName];
--  NamedValues[VarName] = Variable;
+-  Value *OldVal = NamedValues[VariableName];
+-  NamedValues[VariableName] = Variable;
 -
 *  // Evaluate the condition; treat 0.0 as false, anything else as true.
 *  Value *CondVal = Condition->codegen();
@@ -790,7 +837,7 @@ Then I switch `ForExpressionNode::codegen` to a memory slot for the loop variabl
 -  BasicBlock *BodyEndBB = TheBuilder->GetInsertBlock();
 -  Variable->addIncoming(NextVar, BodyEndBB);
 +  // Execute the complete update expression; its value is discarded.
-+  if (!Step->codegen())
++  if (!Update->codegen())
 +    return nullptr;
 *  TheBuilder->CreateBr(CondBB);
 *
@@ -799,14 +846,14 @@ Then I switch `ForExpressionNode::codegen` to a memory slot for the loop variabl
 *
 *  // Restore the shadowed variable (if any) now that the loop is done.
 -  if (OldVal)
--    NamedValues[VarName] = OldVal;
+-    NamedValues[VariableName] = OldVal;
 -  else
--    NamedValues.erase(VarName);
-+  if (IsVarDecl) {
+-    NamedValues.erase(VariableName);
++  if (DeclaresVariable) {
 +    if (PreviousVariableSlot)
-+      NamedValues[VarName] = PreviousVariableSlot;
++      NamedValues[VariableName] = PreviousVariableSlot;
 +    else
-+      NamedValues.erase(VarName);
++      NamedValues.erase(VariableName);
 +  }
 *
 *  // The for expression always produces 0.0.
@@ -814,13 +861,13 @@ Then I switch `ForExpressionNode::codegen` to a memory slot for the loop variabl
 *}
 ```
 
-`Step` is now the complete update operation. For `i = i + 1`, assignment codegen
+`Update` is now the complete update operation. For `i = i + 1`, assignment codegen
 loads `i`, adds `1`, and stores the result. The loop itself only evaluates that
 expression and branches back to the condition. This also permits updates such as
 `i = i * 2` or function calls with side effects. An update that never changes
 anything is legal, but may naturally leave the loop running forever.
 
-`IsVarDecl` also controls teardown: when `var` was used, I remove the loop variable from `NamedValues` (or restore the shadowed outer binding) after the loop exits; when it wasn't, I leave the existing slot untouched.
+`DeclaresVariable` also controls teardown: when `var` was used, I remove the loop variable from `NamedValues` (or restore the shadowed outer binding) after the loop exits; when it wasn't, I leave the existing slot untouched.
 
 Here is `def count(n): for var i = 1, i < n, i = i + 1: i` with `-O0 -v`:
 
@@ -849,7 +896,7 @@ loop_body:
   br label %loop_cond
 
 after_loop:
-  ret double 0.000000e+00  ; for always returns 0.0 (established in chapter 9)
+  ret double 0.000000e+00  ; for always returns 0.0 (established in chapter 10)
 }
 ```
 
@@ -933,7 +980,7 @@ entry:
 }
 ```
 
-Nine instructions down to two.
+Nine instructions down to two — and that's not a coincidence: it's the exact same IR [Chapter 10](chapter-10.md) generated for this function, back before `var` and `=` existed at all. That's the actual point of this example. Adding mutation didn't cost me anything here, because `mem2reg` claws back every bit of the overhead it introduced. It has nowhere near as easy a time of it once a variable's value depends on which branch of an `if` ran, or on how many times a loop went around — there's no straight-line substitution to fall back on there. That's the case worth looking at next.
 
 > Without `mem2reg` collapsing needless memory operations first, `GVNPass` and `InstCombinePass` would have to stay conservative around memory operations and would miss optimizations they'd otherwise catch.
 
@@ -1013,7 +1060,74 @@ Two things are worth noticing here. First, the optimizer canonicalized `i <= n` 
 
 Second, the trailing `fadd ... 0.0` doesn't disappear, even after optimization. None of my three passes fold "add zero" away, and without `-ffast-math` LLVM wouldn't do it unconditionally anyway — `x + 0.0` isn't always exactly `x` in IEEE 754 (`-0.0 + 0.0` is `0.0`, not `-0.0`), so removing it is only safe if LLVM knows the sign of zero never matters here. It doesn't know that, so the instruction stays.
 
-Each PHI node says: "on the first iteration, take the initial value (from `%entry`); on every subsequent iteration, take the updated value (from `%loop_body`)." Two mutable variables, two PHI nodes — one per slot that `mem2reg` promoted.
+Each PHI node says: "on the first iteration, take the initial value (from `%entry`); on every subsequent iteration, take the updated value (from `%loop_body`)." Two mutable variables, two PHI nodes — one per slot `mem2reg` promoted. More on why this matters at the [end of this chapter](#why-not-just-build-phi-nodes-by-hand).
+
+It scales the way you'd hope, too. Five mutable locals instead of one:
+
+```pyxc
+def sequence(x, y): y
+def five(n): var a = 0, b = 0, c = 0, d = 0, e = 0: (for var i = 1, i <= n, i = i + 1: sequence(sequence(sequence(sequence(a = a + 1, b = b + 2), c = c + 3), d = d + 4), e = e + 5)) + a + b + c + d + e
+```
+
+produces five PHI nodes, one per variable, plus the loop counter's own — six in total, each with the identical two-entry shape:
+
+```llvm
+loop_cond:
+  %a.0 = phi double [ 0.000000e+00, %entry ], [ %addtmp, %loop_body ]
+  %b.0 = phi double [ 0.000000e+00, %entry ], [ %addtmp6, %loop_body ]
+  %c.0 = phi double [ 0.000000e+00, %entry ], [ %addtmp8, %loop_body ]
+  %d.0 = phi double [ 0.000000e+00, %entry ], [ %addtmp11, %loop_body ]
+  %e.0 = phi double [ 0.000000e+00, %entry ], [ %addtmp14, %loop_body ]
+  %i.0 = phi double [ 1.000000e+00, %entry ], [ %addtmp17, %loop_body ]
+```
+
+`five(3)` evaluates to `45.0` — 3 + 6 + 9 + 12 + 15, exactly what five independent counters incrementing by 1 through 5 each iteration should add up to. No combinatorics, no special-casing per variable count: one mutable slot alive across the loop's back-edge earns exactly one PHI, whether there's one of them or five.
+
+## Why Not Just Build PHI Nodes By Hand?
+
+Chapter 10 already had one mutable value to deal with — the `for` loop counter — and it hand-built a `PHINode` for it, no memory involved:
+
+```cpp
+PHINode *Variable =
+    TheBuilder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VariableName);
+Variable->addIncoming(StartVal, PreheaderBB);
+// ...body codegen...
+Value *NextVar = TheBuilder->CreateFAdd(Variable, StepVal, "nextvar");
+BasicBlock *BodyEndBB = TheBuilder->GetInsertBlock();
+Variable->addIncoming(NextVar, BodyEndBB);
+```
+
+One variable, one merge point, two incoming edges. `sum_to` and `five`, above, needed two and six PHIs — still fine, since every one of them sat at that same single merge point, the loop header.
+
+Here's where hand-placement stops being fine. Put a variable behind an `if`/`else` *inside* a `for`:
+
+```pyxc
+def clamped_sum(n): var total = 0: (for var i = 1, i <= n, i = i + 1: if i > 5: total = total + 100 else: total = total + i) + total
+```
+
+`mem2reg` inserts two PHIs for `total`, at two different merge points:
+
+```llvm
+then:
+  %addtmp = fadd double %total.0, 1.000000e+02
+  br label %ifcont
+
+else:
+  %addtmp10 = fadd double %total.0, %i.0
+  br label %ifcont
+
+ifcont:
+  %total.1 = phi double [ %addtmp, %then ], [ %addtmp10, %else ]        ; merge #1: if/else
+  ...
+  br label %loop_cond
+
+loop_cond:
+  %total.0 = phi double [ 0.000000e+00, %entry ], [ %total.1, %ifcont ] ; merge #2: loop header
+```
+
+`%total.1` merges the `if`'s two branches. `%total.0` then merges *that* result with `total`'s starting value, once per iteration — it depends on `%total.1`, which has to exist first. Hand-building this means noticing that dependency yourself, before writing any code: place the wrong PHI first, or forget one merge point exists, and the wiring is wrong. Add a second variable, or nest another `if`, and now there are several PHIs whose dependencies on each other you're tracking by hand, every time.
+
+The scaling problem isn't any single PHI — it's that the number of merge points, and which variables are live at each one, is a property of the whole function's control-flow graph, not of any one construct. LLVM sidesteps this at the IR level entirely: it demands SSA form for registers, never for memory. So every mutable — parameters, `var` locals, loop counters — becomes a plain memory slot instead: `alloca`, `load`, `store`, no SSA restriction at all. `mem2reg` then works out where every PHI belongs, for the whole function, once, correctly. That's the pass this chapter's been running the whole time.
 
 ## Build and Run
 

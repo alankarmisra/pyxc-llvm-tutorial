@@ -746,6 +746,47 @@ ifcont:                                       ; both branches rejoin here
 }
 ```
 
+**C equivalent:**
+```cpp
+double absdiff(double a, double b) {
+    double iftmp;
+
+    if (a > b) goto then_block;
+    goto else_block;
+
+then_block:
+    iftmp = a - b;       // phi's incoming value for the "then" edge
+    goto ifcont_block;
+
+else_block:
+    iftmp = b - a;       // phi's incoming value for the "else" edge
+    goto ifcont_block;
+
+ifcont_block:
+    return iftmp;
+}
+```
+
+Notice that since C allows reassigning to a variable, we can just use `iftmp`. But SSA code doesn't allow that which is why we need the `phi` workaround. This is just an IR convention. When it gets compiled down to machine code, the compiler will issue instructions similar to C. Here's a simplified assembly version:
+
+```asm
+absdiff:
+    fcmp    d0, d1          ; compare a, b
+    b.le    .else
+
+.then:
+    fsub    d2, d0, d1      ; d2 = a - b
+    b       .ifcont
+
+.else:
+    fsub    d2, d1, d0      ; d2 = b - a
+    b       .ifcont
+
+.ifcont:
+    ; d2 holds the result no matter which branch ran
+    ret
+```
+
 Because execution jumps directly to either `then` or `else` and never enters the other block, `if`/`else` short-circuits — the branch not taken is never evaluated.
 
 ### What `-v` Shows
@@ -881,15 +922,18 @@ I introduce `var_name` for the loop and make it available to the condition, step
 
 ```cpp
 class ForExpressionNode : public ExpressionNode {
-  string VarName;
+  string VariableName;
   unique_ptr<ExpressionNode> Start, Condition, Step, Body;
 
 public:
-  ForExpressionNode(const string &VarName, unique_ptr<ExpressionNode> Start,
-             unique_ptr<ExpressionNode> Condition, unique_ptr<ExpressionNode> Step,
-             unique_ptr<ExpressionNode> Body)
-      : VarName(VarName), Start(std::move(Start)), Condition(std::move(Condition)),
-        Step(std::move(Step)), Body(std::move(Body)) {}
+  ForExpressionNode(const string &VariableName,
+                    unique_ptr<ExpressionNode> Start,
+                    unique_ptr<ExpressionNode> Condition,
+                    unique_ptr<ExpressionNode> Step,
+                    unique_ptr<ExpressionNode> Body)
+      : VariableName(VariableName), Start(std::move(Start)),
+        Condition(std::move(Condition)), Step(std::move(Step)),
+        Body(std::move(Body)) {}
   Value *codegen() override;
 };
 ```
@@ -910,7 +954,7 @@ static unique_ptr<ExpressionNode> ParseForExpression() {
 
   if (CurrentToken != tok_name)
     return LogErrorExpression("Expected variable name after 'for'");
-  string VarName = Name;
+  string VariableName = Name;
   getNextToken(); // eat name
 
   if (CurrentToken != tok_assign)
@@ -949,7 +993,7 @@ static unique_ptr<ExpressionNode> ParseForExpression() {
     return nullptr;
 
   return make_unique<ForExpressionNode>(
-      VarName, std::move(Start), std::move(Condition),
+      VariableName, std::move(Start), std::move(Condition),
       std::move(Step), std::move(Body));
 }
 ```
@@ -1033,7 +1077,7 @@ after_loop:  ; (empty)
 +  // PHI picks start_val on the first iteration, next_i on subsequent ones.
 +  // The back-edge incoming value is added below once we know BodyEndBB.
 +  PHINode *Variable =
-+      TheBuilder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VarName);
++      TheBuilder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VariableName);
 +  Variable->addIncoming(StartVal, PreheaderBB);
 ```
 
@@ -1047,16 +1091,16 @@ loop_cond:
   %i = phi double [ 1.000000e+00, %entry ]
 ```
 
-Right after creating the PHI, I bind `VarName` to it in `NamedValues`, saving whatever it was bound to before so I can restore it once the loop ends (I cover the shadow/restore mechanics in full further down):
+Right after creating the PHI, I bind `VariableName` to it in `NamedValues`, saving whatever it was bound to before so I can restore it once the loop ends (I cover the shadow/restore mechanics in full further down):
 
 ```cppdiff
 *  PHINode *Variable =
-*      TheBuilder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VarName);
+*      TheBuilder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VariableName);
 *  Variable->addIncoming(StartVal, PreheaderBB);
 +
 +  // Shadow any outer variable of the same name so the body sees the loop var.
-+  Value *OldVal = NamedValues[VarName];
-+  NamedValues[VarName] = Variable;
++  Value *OldVal = NamedValues[VariableName];
++  NamedValues[VariableName] = Variable;
 ```
 
 I do this before generating the condition, not just before the body, because the condition can reference the loop variable too — `i <= 3` needs to find `i`.
@@ -1064,8 +1108,8 @@ I do this before generating the condition, not just before the body, because the
 Next I generate the loop condition expression, check it for null, and convert it to the `i1` `CreateCondBr` needs — the same round trip `IfExpressionNode::codegen()` does:
 
 ```cppdiff
-*  Value *OldVal = NamedValues[VarName];
-*  NamedValues[VarName] = Variable;
+*  Value *OldVal = NamedValues[VariableName];
+*  NamedValues[VariableName] = Variable;
 +
 +  // Evaluate the condition; treat 0.0 as false, anything else as true.
 +  Value *CondVal = Condition->codegen();
@@ -1182,9 +1226,9 @@ after_loop:  ; (empty)
 +
 +  // Restore the shadowed variable (if any) now that the loop is done.
 +  if (OldVal)
-+    NamedValues[VarName] = OldVal;
++    NamedValues[VariableName] = OldVal;
 +  else
-+    NamedValues.erase(VarName);
++    NamedValues.erase(VariableName);
 +
 +  // The for expression always produces 0.0.
 +  return ConstantFP::get(*TheContext, APFloat(0.0));
@@ -1223,12 +1267,12 @@ Value *ForExpressionNode::codegen() {
   // PHI picks start_val on the first iteration, next_i on subsequent ones.
   // The back-edge incoming value is added below once we know BodyEndBB.
   PHINode *Variable =
-      TheBuilder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VarName);
+      TheBuilder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VariableName);
   Variable->addIncoming(StartVal, PreheaderBB);
 
   // Shadow any outer variable of the same name so the body sees the loop var.
-  Value *OldVal = NamedValues[VarName];
-  NamedValues[VarName] = Variable;
+  Value *OldVal = NamedValues[VariableName];
+  NamedValues[VariableName] = Variable;
 
   // Evaluate the condition; treat 0.0 as false, anything else as true.
   Value *CondVal = Condition->codegen();
@@ -1262,9 +1306,9 @@ Value *ForExpressionNode::codegen() {
 
   // Restore the shadowed variable (if any) now that the loop is done.
   if (OldVal)
-    NamedValues[VarName] = OldVal;
+    NamedValues[VariableName] = OldVal;
   else
-    NamedValues.erase(VarName);
+    NamedValues.erase(VariableName);
 
   // The for expression always produces 0.0.
   return ConstantFP::get(*TheContext, APFloat(0.0));
@@ -1339,13 +1383,13 @@ after_loop:
 If an outer function parameter has the same name as the loop variable, the loop variable takes precedence inside the loop. The outer binding is saved before the loop and restored in `after_loop`:
 
 ```cpp
-Value *OldVal = NamedValues[VarName];
-NamedValues[VarName] = Variable;
+Value *OldVal = NamedValues[VariableName];
+NamedValues[VariableName] = Variable;
 // ... condition, step, body codegen ...
 if (OldVal)
-  NamedValues[VarName] = OldVal;
+  NamedValues[VariableName] = OldVal;
 else
-  NamedValues.erase(VarName);
+  NamedValues.erase(VariableName);
 ```
 
 ### Wiring If and For into Primary

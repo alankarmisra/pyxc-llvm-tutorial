@@ -176,12 +176,12 @@ static unique_ptr<ExpressionNode> ParseContinueStatement() {
 `ParseForStatement` now installs a `ParseLoopGuard` too, right alongside the scope guard it already had:
 
 ```cpp
-unique_ptr<ExpressionNode> Start, Condition, Step, Body;
+unique_ptr<ExpressionNode> Start, Condition, Update, Body;
 ParseLoopGuard ParseLoop;
 
 unique_ptr<LoopScopeGuard> LoopScope;
-if (IsVarDecl)
-  LoopScope = make_unique<LoopScopeGuard>(VarName);
+if (DeclaresVariable)
+  LoopScope = make_unique<LoopScopeGuard>(VariableName);
 ```
 
 ## Parsing `while` and `do`/`while`
@@ -251,7 +251,7 @@ static unique_ptr<ExpressionNode> ParseSimpleStatement() {
   if (CurrentToken == tok_continue)
     return ParseContinueStatement();
   if (CurrentToken == tok_var)
-    return ParseVarStatement();
+    return ParseVariableStatement();
   if (CurrentToken == tok_name)
     return ParseLeadingNameSimpleStatement();
   return ParseNonLeadingNameSimpleStatement();
@@ -364,7 +364,7 @@ if (!TheBuilder->GetInsertBlock()->getTerminator())
 TheBuilder->SetInsertPoint(StepBB);
 
 // Execute the complete update expression; its value is discarded.
-if (!Step->codegen())
+if (!Update->codegen())
   return nullptr;
 TheBuilder->CreateBr(CondBB);
 ```

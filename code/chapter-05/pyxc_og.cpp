@@ -99,91 +99,48 @@ struct SourceLocation {
 static SourceLocation CurrentTokenLocation;
 static SourceLocation LexerLocation = {1, 0};
 
-// SourceManager - Reads and buffers complete source lines so error messages
-// can reprint the offending line with a caret underneath it, even when the
-// lexer has consumed only the first few characters of that line.
+// SourceManager - Buffers every source line as it is read so that error
+// messages can reprint the offending line with a caret underneath it.
+//
+// advance() calls onChar() for every character it consumes. When a '\n'
+// arrives, the just-completed line is moved into CompletedLines and
+// CurrentLine starts fresh. getLine(N) returns a pointer to the Nth line
+// (1-based): completed lines are stable in the vector; the line currently
+// being assembled is in CurrentLine.
 //
 // Because the REPL accumulates all input in one session, line numbers
 // increase monotonically across inputs and getLine() can retrieve any
 // previously seen line — useful for multi-line function bodies and for
 // pointing the caret at a line that was parsed several inputs ago.
 class SourceManager {
-  vector<string> Lines;
-  string BufferedLine;
-  size_t NextCharacter = 0;
-  bool HasBufferedNewline = false;
-  bool ReachedEndOfInput = false;
+  vector<string> CompletedLines;
+  string CurrentLine;
 
 public:
   void reset() {
-    Lines.clear();
-    BufferedLine.clear();
-    NextCharacter = 0;
-    HasBufferedNewline = false;
-    ReachedEndOfInput = false;
+    CompletedLines.clear();
+    CurrentLine.clear();
   }
 
-  /// readChar - Return one normalized character from stdin.
-  ///
-  /// I read a complete physical line before returning its first character.
-  /// This means getLine() can always return the whole current line, not just
-  /// the prefix that the lexer has consumed so far. CRLF and bare CR line
-  /// endings are normalized to '\n' here.
-  int readChar() {
-    if (NextCharacter < BufferedLine.size())
-      return static_cast<unsigned char>(BufferedLine[NextCharacter++]);
-
-    if (HasBufferedNewline) {
-      HasBufferedNewline = false;
-      return '\n';
+  void onChar(int C) {
+    if (C == '\n') {
+      CompletedLines.push_back(CurrentLine);
+      CurrentLine.clear();
+      return;
     }
-
-    if (ReachedEndOfInput)
-      return EOF;
-
-    string Line;
-    while (true) {
-      int Character = getchar();
-      if (Character == EOF) {
-        ReachedEndOfInput = true;
-        break;
-      }
-      if (Character == '\n') {
-        HasBufferedNewline = true;
-        break;
-      }
-      if (Character == '\r') {
-        int NextInputCharacter = getchar();
-        if (NextInputCharacter != '\n' && NextInputCharacter != EOF)
-          ungetc(NextInputCharacter, stdin);
-        if (NextInputCharacter == EOF)
-          ReachedEndOfInput = true;
-        HasBufferedNewline = true;
-        break;
-      }
-      Line.push_back(static_cast<char>(Character));
-    }
-
-    if (Line.empty() && !HasBufferedNewline && ReachedEndOfInput)
-      return EOF;
-
-    Lines.push_back(std::move(Line));
-    BufferedLine = Lines.back();
-    NextCharacter = 0;
-
-    if (NextCharacter < BufferedLine.size())
-      return static_cast<unsigned char>(BufferedLine[NextCharacter++]);
-
-    HasBufferedNewline = false;
-    return '\n';
+    if (C != EOF)
+      CurrentLine.push_back(static_cast<char>(C));
   }
 
   const string *getLine(int OneBasedLine) const {
     if (OneBasedLine <= 0)
       return nullptr;
     size_t Index = static_cast<size_t>(OneBasedLine - 1);
-    if (Index < Lines.size())
-      return &Lines[Index];
+    if (Index < CompletedLines.size())
+      return &CompletedLines[Index];
+    // I may need the current line before I have consumed its newline.
+    if (Index == CompletedLines.size())
+      return &CurrentLine;
     return nullptr;
   }
 };
@@ -193,21 +150,44 @@ static void PrintErrorSourceContext(SourceLocation Location);
 static void LogInvalidNumberLiteralAtLocation(const string &Literal,
                                          SourceLocation Location);
 
-/// advance - Return the next character from the source manager and update
-/// the lexer's line and column.
+/// advance - I return the next character, normalizing `\r\n` (Windows)
+/// and bare `\r` (Old Macs) into `\n`.
 ///
-/// The source manager has already normalized line endings and buffered the
-/// complete physical line for diagnostics.
+/// This is the single point through which all character consumption flows.
+/// Every token branch in getToken() calls advance() rather than getchar()
+/// directly, so LexerLocation and the source buffer are always in sync.
 static int advance() {
-  int LastChar = PyxcSourceManager.readChar();
+  int LastChar = getchar();
 
-  if (LastChar == '\n') {
+  // case: '\r' or '\r\n'
+  if (LastChar == '\r') {
+    int NextChar = getchar();
+
+    // A following '\n' is part of the same line ending; eat it.
+    // Anything else belongs to the next token; put it back.
+    // (EOF can't be put back at all, so it's excluded from that check.
+    // The next getchar() will still return EOF, so we don't lose it.)
+    if (NextChar != '\n' && NextChar != EOF) {
+      ungetc(NextChar, stdin);
+    }
+    PyxcSourceManager.onChar('\n');
     LexerLocation.Line++;
     LexerLocation.Column = 0;
-  } else if (LastChar != EOF) {
+    return '\n';
+  }
+
+  // '\n' resets Column and starts a new buffered line; anything else
+  // just advances Column within the current line.
+  if (LastChar == '\n') {
+    PyxcSourceManager.onChar('\n');
+    LexerLocation.Line++;
+    LexerLocation.Column = 0;
+  } else {
+    PyxcSourceManager.onChar(LastChar);
     LexerLocation.Column++;
   }
 
+  // case '\n' or any other non-newline character
   return LastChar;
 }
 

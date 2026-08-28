@@ -100,13 +100,13 @@ struct TopLevelParseGuard {
 };
 ```
 
-`ParseVarStatement` checks this flag and routes to the right tracking set:
+`ParseVariableStatement` checks this flag and routes to the right tracking set:
 
 ```cppdiff
-*static unique_ptr<ExpressionNode> ParseVarStatement() {
+*static unique_ptr<ExpressionNode> ParseVariableStatement() {
 *  getNextToken(); // eat 'var'
 *
-*  vector<pair<string, unique_ptr<ExpressionNode>>> VarNames;
+*  vector<pair<string, unique_ptr<ExpressionNode>>> VariableBindings;
 +  bool IsGlobalDeclaration = ParsingTopLevel;
 *
 *  while (true) {
@@ -140,7 +140,7 @@ struct TopLevelParseGuard {
 *      Init = make_unique<NumberExpressionNode>(0.0);
 *    }
 *
-*    VarNames.push_back({ParsedName, std::move(Init)});
+*    VariableBindings.push_back({ParsedName, std::move(Init)});
 -    DeclareVar(ParsedName);
 +    if (IsGlobalDeclaration)
 +      GlobalVarNames.insert(ParsedName);
@@ -152,7 +152,7 @@ struct TopLevelParseGuard {
 *    getNextToken(); // eat ','
 *  }
 *
-*  return make_unique<VarStatementNode>(std::move(VarNames));
+*  return make_unique<VariableStatementNode>(std::move(VariableBindings));
 *}
 ```
 
@@ -221,16 +221,16 @@ Each top-level input gets a unique name (`__pyxc.toplevel.0`, `__pyxc.toplevel.1
 
 ## Codegen: Emitting a Global Instead of an Alloca
 
-I want `VarStatementNode::codegen` to emit a `GlobalVariable` instead of an `alloca` when it's running inside `__pyxc.global_init`. There's one wrinkle: by the time a `var` statement codegens, `GetGlobalVariable` (below) may already have emitted a bare *declaration* for this name in the current module — some earlier statement in the same file might have referenced it before its `var` line was reached. So I can't just unconditionally create a new global; I have to check whether one already exists in this module and, if it's only a declaration, promote it to a real definition instead of creating a second, colliding global:
+I want `VariableStatementNode::codegen` to emit a `GlobalVariable` instead of an `alloca` when it's running inside `__pyxc.global_init`. There's one wrinkle: by the time a `var` statement codegens, `GetGlobalVariable` (below) may already have emitted a bare *declaration* for this name in the current module — some earlier statement in the same file might have referenced it before its `var` line was reached. So I can't just unconditionally create a new global; I have to check whether one already exists in this module and, if it's only a declaration, promote it to a real definition instead of creating a second, colliding global:
 
 ```cpp
-Value *VarStatementNode::codegen() {
+Value *VariableStatementNode::codegen() {
   if (InGlobalInit) {
-    for (auto &Var : VarNames) {
-      const string &VarName = Var.first;
+    for (auto &Var : VariableBindings) {
+      const string &VariableName = Var.first;
       ExpressionNode *Initializer = Var.second.get();
 
-      auto *Global = TheModule->getNamedGlobal(VarName);
+      auto *Global = TheModule->getNamedGlobal(VariableName);
       if (Global && !Global->isDeclaration())
         return LogErrorValue("Global variable already defined");
 
@@ -240,7 +240,7 @@ Value *VarStatementNode::codegen() {
         Global = new GlobalVariable(
             *TheModule, Type::getDoubleTy(*TheContext), false,
             GlobalValue::ExternalLinkage,
-            ConstantFP::get(*TheContext, APFloat(0.0)), VarName);
+            ConstantFP::get(*TheContext, APFloat(0.0)), VariableName);
       } else {
         // A bare 'extern'-style declaration already exists for this name —
         // turn it into a real definition instead of creating a duplicate.
@@ -262,7 +262,7 @@ Value *VarStatementNode::codegen() {
 
   // Inside a function: alloca path, unchanged from chapter 12.
   Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
-  for (auto &Var : VarNames) {
+  for (auto &Var : VariableBindings) {
     // ...
   }
   return ConstantFP::get(*TheContext, APFloat(0.0));
@@ -332,27 +332,27 @@ Value *AssignmentStatementNode::codegen() {
 
 A local variable always shadows a global of the same name. Inside a function, if you declare `var x`, the alloca goes into `NamedValues` and that check wins. After the function returns and `NamedValues` is cleared, the global is visible again.
 
-`ForStatementNode::codegen` gets the same fallback. A `for x = start, cond, x = x + step: ...` loop that reuses an already-declared name (no `var`) used to look `VarName` up in `NamedValues` only, and fail if it wasn't a local. Now it tries `NamedValues` first and falls back to `GetGlobalVariable`, storing whichever pointer it finds in a new `VariablePointer` local that the rest of the function (the initial store, the per-iteration load, and the step store) uses in place of `LoopVariableSlot`:
+`ForStatementNode::codegen` gets the same fallback. A `for x = start, cond, x = x + step: ...` loop that reuses an already-declared name (no `var`) used to look `VariableName` up in `NamedValues` only, and fail if it wasn't a local. Now it tries `NamedValues` first and falls back to `GetGlobalVariable`, storing whichever pointer it finds in a new `VariablePointer` local that the rest of the function (the initial store, the per-iteration load, and the step store) uses in place of `LoopVariableSlot`:
 
 ```cpp
 Value *VariablePointer = nullptr;
 AllocaInst *LoopVariableSlot = nullptr;
 AllocaInst *PreviousVariableSlot = nullptr;
-if (IsVarDecl) {
-  auto PreviousBinding = NamedValues.find(VarName);
+if (DeclaresVariable) {
+  auto PreviousBinding = NamedValues.find(VariableName);
   if (PreviousBinding != NamedValues.end())
     PreviousVariableSlot = PreviousBinding->second;
-  LoopVariableSlot = CreateEntryBlockAlloca(TheFunction, VarName);
+  LoopVariableSlot = CreateEntryBlockAlloca(TheFunction, VariableName);
   VariablePointer = LoopVariableSlot;
-  NamedValues[VarName] = LoopVariableSlot;
+  NamedValues[VariableName] = LoopVariableSlot;
 } else {
-  auto ExistingBinding = NamedValues.find(VarName);
+  auto ExistingBinding = NamedValues.find(VariableName);
   if (ExistingBinding != NamedValues.end() && ExistingBinding->second)
     VariablePointer = ExistingBinding->second;
-  else if (auto *Global = GetGlobalVariable(VarName))
+  else if (auto *Global = GetGlobalVariable(VariableName))
     VariablePointer = Global;
   else
-    return LogErrorValue("Unknown variable name: '" + VarName + "'");
+    return LogErrorValue("Unknown variable name: '" + VariableName + "'");
 }
 ```
 
@@ -415,11 +415,11 @@ static void HandleTopLevelStatement() {
 }
 ```
 
-`ModuleHasGlobals` is set by `VarStatementNode::codegen` when it emits a `GlobalVariable`. If it's set, I keep the module permanently — freeing it would destroy the global's storage. If not, the old ResourceTracker path from chapter 8 applies and the module is freed after execution. Both branches call `PrintEvaluationResult()` — keeping a module doesn't change how its result gets reported, only what happens to the module afterward.
+`ModuleHasGlobals` is set by `VariableStatementNode::codegen` when it emits a `GlobalVariable`. If it's set, I keep the module permanently — freeing it would destroy the global's storage. If not, the old ResourceTracker path from chapter 8 applies and the module is freed after execution. Both branches call `PrintEvaluationResult()` — keeping a module doesn't change how its result gets reported, only what happens to the module afterward.
 
-`LastTopLevelShouldPrint` gates both the `"Parsed a top-level expression."` line and the final result print. That's why `var count = 0` produces no REPL output at all: `VarStatementNode::shouldPrintValue()` returns `false`, so neither message fires.
+`LastTopLevelShouldPrint` gates both the `"Parsed a top-level expression."` line and the final result print. That's why `var count = 0` produces no REPL output at all: `VariableStatementNode::shouldPrintValue()` returns `false`, so neither message fires.
 
-I save and restore `InGlobalInit` rather than hard-resetting it to `false` after codegen, in case `HandleTopLevelStatement` is ever called while something else already has it set. It isn't today, but restoring the old value instead of assuming what it was is a habit worth keeping. Setting it to `true` before codegen is what tells `VarStatementNode::codegen` to emit globals rather than allocas for top-level `var` statements.
+I save and restore `InGlobalInit` rather than hard-resetting it to `false` after codegen, in case `HandleTopLevelStatement` is ever called while something else already has it set. It isn't today, but restoring the old value instead of assuming what it was is a habit worth keeping. Setting it to `true` before codegen is what tells `VariableStatementNode::codegen` to emit globals rather than allocas for top-level `var` statements.
 
 ## File Mode: Collecting Statements, Then Running Them
 

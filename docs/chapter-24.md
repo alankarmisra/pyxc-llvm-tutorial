@@ -632,7 +632,7 @@ if (VarType == ValueType::Struct &&
   return LogErrorExpression("Struct type mismatch in assignment");
 ```
 
-And variable declaration with an initializer, in `ParseVarStatement`:
+And variable declaration with an initializer, in `ParseVariableStatement`:
 
 ```cpp
 if (DeclType == ValueType::Struct &&
@@ -942,7 +942,7 @@ if (Init) {
     return LogErrorValue("Type mismatch in variable initialization");
 }
 
-AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName, VarType,
+AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VariableName, VarType,
                                             VarStructName);
 TheBuilder->CreateStore(InitVal, Alloca);
 ```

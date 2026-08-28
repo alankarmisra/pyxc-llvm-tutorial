@@ -526,12 +526,12 @@ public:
 /// variable. The expression stores Right into the named variable and produces
 /// the assigned value.
 class AssignmentExpressionNode : public ExpressionNode {
-  string Name;
-  unique_ptr<ExpressionNode> Expr;
+  string VariableName;
+  unique_ptr<ExpressionNode> Expression;
 
 public:
-  AssignmentExpressionNode(const string &Name, unique_ptr<ExpressionNode> Expr)
-      : Name(Name), Expr(std::move(Expr)) {}
+  AssignmentExpressionNode(const string &VariableName, unique_ptr<ExpressionNode> Expression)
+      : VariableName(VariableName), Expression(std::move(Expression)) {}
   Value *codegen() override;
 };
 
@@ -562,23 +562,23 @@ public:
 };
 
 /// ForExpressionNode - Expression class for for loops.
-///   for <var> = <start>, <cond>, <step>: <body>
-/// The loop variable is in scope for <cond>, <step>, and <body> (through
+///   for <var> = <start>, <cond>, <update>: <body>
+/// The loop variable is in scope for <cond>, <update>, and <body> (through
 /// NamedValues). The expression always produces 0.0 — the loop is used for side
 /// effects.
 class ForExpressionNode : public ExpressionNode {
-  string VarName;
-  bool IsVarDecl;
-  unique_ptr<ExpressionNode> Start, Condition, Step, Body;
+  string VariableName;
+  bool DeclaresVariable;
+  unique_ptr<ExpressionNode> Start, Condition, Update, Body;
 
 public:
-  ForExpressionNode(const string &VarName, bool IsVarDecl,
+  ForExpressionNode(const string &VariableName, bool DeclaresVariable,
                     unique_ptr<ExpressionNode> Start,
                     unique_ptr<ExpressionNode> Condition,
-                    unique_ptr<ExpressionNode> Step,
+                    unique_ptr<ExpressionNode> Update,
                     unique_ptr<ExpressionNode> Body)
-      : VarName(VarName), IsVarDecl(IsVarDecl), Start(std::move(Start)),
-        Condition(std::move(Condition)), Step(std::move(Step)),
+      : VariableName(VariableName), DeclaresVariable(DeclaresVariable), Start(std::move(Start)),
+        Condition(std::move(Condition)), Update(std::move(Update)),
         Body(std::move(Body)) {}
   Value *codegen() override;
 };
@@ -616,14 +616,14 @@ public:
 /// stores its initializer, shadows any outer binding of the same name for the
 /// duration of the body, then restores the old binding afterward.
 class VariableExpressionNode : public ExpressionNode {
-  vector<pair<string, unique_ptr<ExpressionNode>>> VarNames;
+  vector<pair<string, unique_ptr<ExpressionNode>>> VariableBindings;
   unique_ptr<ExpressionNode> Body;
 
 public:
   VariableExpressionNode(
-      vector<pair<string, unique_ptr<ExpressionNode>>> VarNames,
+      vector<pair<string, unique_ptr<ExpressionNode>>> VariableBindings,
       unique_ptr<ExpressionNode> Body)
-      : VarNames(std::move(VarNames)), Body(std::move(Body)) {}
+      : VariableBindings(std::move(VariableBindings)), Body(std::move(Body)) {}
   Value *codegen() override;
 };
 
@@ -806,15 +806,15 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
 static unique_ptr<ExpressionNode> ParseForExpression() {
   getNextToken(); // eat 'for'
 
-  bool IsVarDecl = false;
+  bool DeclaresVariable = false;
   if (CurrentToken == tok_var) {
-    IsVarDecl = true;
+    DeclaresVariable = true;
     getNextToken(); // optional 'var'
   }
 
   if (CurrentToken != tok_name)
     return LogErrorExpression("Expected variable name after 'for'");
-  string VarName = Name;
+  string VariableName = Name;
   getNextToken(); // eat name
 
   if (CurrentToken != tok_assign)
@@ -837,8 +837,8 @@ static unique_ptr<ExpressionNode> ParseForExpression() {
     return LogErrorExpression("Expected ',' after 'for' condition");
   getNextToken(); // eat ','
 
-  auto Step = ParseExpression();
-  if (!Step)
+  auto Update = ParseExpression();
+  if (!Update)
     return nullptr;
 
   if (CurrentToken != tok_colon)
@@ -852,8 +852,8 @@ static unique_ptr<ExpressionNode> ParseForExpression() {
   if (!Body)
     return nullptr;
 
-  return make_unique<ForExpressionNode>(VarName, IsVarDecl, std::move(Start),
-                                        std::move(Condition), std::move(Step),
+  return make_unique<ForExpressionNode>(VariableName, DeclaresVariable, std::move(Start),
+                                        std::move(Condition), std::move(Update),
                                         std::move(Body));
 }
 
@@ -866,7 +866,7 @@ static unique_ptr<ExpressionNode> ParseForExpression() {
 static unique_ptr<ExpressionNode> ParseVariableExpression() {
   getNextToken(); // eat 'var'
 
-  vector<pair<string, unique_ptr<ExpressionNode>>> VarNames;
+  vector<pair<string, unique_ptr<ExpressionNode>>> VariableBindings;
 
   while (true) {
     if (CurrentToken != tok_name)
@@ -886,7 +886,7 @@ static unique_ptr<ExpressionNode> ParseVariableExpression() {
       Init = make_unique<NumberExpressionNode>(0.0);
     }
 
-    VarNames.push_back({ParsedName, std::move(Init)});
+    VariableBindings.push_back({ParsedName, std::move(Init)});
 
     if (CurrentToken != tok_comma)
       break;
@@ -903,7 +903,7 @@ static unique_ptr<ExpressionNode> ParseVariableExpression() {
   if (!Body)
     return nullptr;
 
-  return make_unique<VariableExpressionNode>(std::move(VarNames),
+  return make_unique<VariableExpressionNode>(std::move(VariableBindings),
                                              std::move(Body));
 }
 
@@ -1227,10 +1227,10 @@ Value *LogErrorValue(const string &ErrorMessage) {
 /// CreateEntryBlockAlloca - Create a memory slot in the current function's
 /// entry block for a mutable variable.
 static AllocaInst *CreateEntryBlockAlloca(Function *TheFunction,
-                                          const string &VarName) {
+                                          const string &VariableName) {
   IRBuilder<> TmpB(&TheFunction->getEntryBlock(),
                    TheFunction->getEntryBlock().begin());
-  return TmpB.CreateAlloca(Type::getDoubleTy(*TheContext), nullptr, VarName);
+  return TmpB.CreateAlloca(Type::getDoubleTy(*TheContext), nullptr, VariableName);
 }
 
 /// getFunction - Resolve a function name to an LLVM Function* in the current
@@ -1281,13 +1281,13 @@ Value *NameExpressionNode::codegen() {
 /// AssignmentExpressionNode::codegen - Evaluate the Right, store it into the
 /// variable's memory slot, and produce the assigned value.
 Value *AssignmentExpressionNode::codegen() {
-  Value *Value = Expr->codegen();
+  Value *Value = Expression->codegen();
   if (!Value)
     return nullptr;
 
-  auto VariableBinding = NamedValues.find(Name);
+  auto VariableBinding = NamedValues.find(VariableName);
   if (VariableBinding == NamedValues.end() || !VariableBinding->second)
-    return LogErrorValue("Unknown variable name: '" + Name + "'");
+    return LogErrorValue("Unknown variable name: '" + VariableName + "'");
 
   TheBuilder->CreateStore(Value, VariableBinding->second);
   return Value;
@@ -1490,7 +1490,7 @@ Value *IfExpressionNode::codegen() {
 ///
 ///   loop_body:
 ///     ; <Body codegen> (value ignored)
-///     ; <Step codegen> (complete update expression; value ignored)
+///     ; <Update codegen> (complete update expression; value ignored)
 ///     br label %loop_cond
 ///
 ///   after_loop:
@@ -1498,7 +1498,7 @@ Value *IfExpressionNode::codegen() {
 ///     ; for-expression result:
 ///     ret-like value = 0.0
 ///
-/// The loop variable name is rebound to the alloca for Condition/Step/Body,
+/// The loop variable name is rebound to the alloca for Condition/Update/Body,
 /// then restored after the loop.
 Value *ForExpressionNode::codegen() {
   Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
@@ -1510,22 +1510,22 @@ Value *ForExpressionNode::codegen() {
 
   AllocaInst *LoopVariableSlot = nullptr;
   AllocaInst *PreviousVariableSlot = nullptr;
-  if (IsVarDecl) {
+  if (DeclaresVariable) {
     // With `for var`, I declare a new loop variable. I save any binding it
     // shadows so I can restore that binding after the loop, then I create the
     // new slot.
-    auto PreviousBinding = NamedValues.find(VarName);
+    auto PreviousBinding = NamedValues.find(VariableName);
     if (PreviousBinding != NamedValues.end())
       PreviousVariableSlot = PreviousBinding->second;
-    LoopVariableSlot = CreateEntryBlockAlloca(TheFunction, VarName);
+    LoopVariableSlot = CreateEntryBlockAlloca(TheFunction, VariableName);
     TheBuilder->CreateStore(StartVal, LoopVariableSlot);
-    NamedValues[VarName] = LoopVariableSlot;
+    NamedValues[VariableName] = LoopVariableSlot;
   } else {
     // Without `var`, I reuse a variable that already exists. If the lookup
     // fails, I report an unknown-variable error.
-    auto ExistingBinding = NamedValues.find(VarName);
+    auto ExistingBinding = NamedValues.find(VariableName);
     if (ExistingBinding == NamedValues.end() || !ExistingBinding->second)
-      return LogErrorValue("Unknown variable name: '" + VarName + "'");
+      return LogErrorValue("Unknown variable name: '" + VariableName + "'");
     LoopVariableSlot = ExistingBinding->second;
     TheBuilder->CreateStore(StartVal, LoopVariableSlot);
   }
@@ -1559,9 +1559,9 @@ Value *ForExpressionNode::codegen() {
   if (!Body->codegen())
     return nullptr;
 
-  // Step: advance the loop variable.
+  // Update: advance the loop variable.
   // Execute the complete update expression; its value is discarded.
-  if (!Step->codegen())
+  if (!Update->codegen())
     return nullptr;
   TheBuilder->CreateBr(CondBB);
 
@@ -1569,11 +1569,11 @@ Value *ForExpressionNode::codegen() {
   TheBuilder->SetInsertPoint(AfterBB);
 
   // Restore the shadowed variable (if any) now that the loop is done.
-  if (IsVarDecl) {
+  if (DeclaresVariable) {
     if (PreviousVariableSlot)
-      NamedValues[VarName] = PreviousVariableSlot;
+      NamedValues[VariableName] = PreviousVariableSlot;
     else
-      NamedValues.erase(VarName);
+      NamedValues.erase(VariableName);
   }
 
   // The for expression always produces 0.0.
@@ -1587,19 +1587,19 @@ Value *VariableExpressionNode::codegen() {
   vector<pair<string, AllocaInst *>> OldBindings;
   Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
 
-  for (auto &Var : VarNames) {
-    const string &VarName = Var.first;
+  for (auto &Var : VariableBindings) {
+    const string &VariableName = Var.first;
     ExpressionNode *Init = Var.second.get();
 
     Value *InitVal = Init->codegen();
     if (!InitVal)
       return nullptr;
 
-    AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
+    AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VariableName);
     TheBuilder->CreateStore(InitVal, Alloca);
 
-    OldBindings.push_back({VarName, NamedValues[VarName]});
-    NamedValues[VarName] = Alloca;
+    OldBindings.push_back({VariableName, NamedValues[VariableName]});
+    NamedValues[VariableName] = Alloca;
   }
 
   Value *BodyVal = Body->codegen();

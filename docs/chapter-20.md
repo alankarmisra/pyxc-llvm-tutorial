@@ -339,7 +339,7 @@ static void EmitDebugDeclare(AllocaInst *Alloca, StringRef Name, unsigned Line,
 }
 ```
 
-`DITypeFor(Type)` is what makes each declared variable's debug entry match its actual pyxc type — an `int8` local gets `Int8DIType`, a `bool` gets `BoolDIType`, and so on. `createParameterVariable` and `createAutoVariable` produce the same kind of node, `DILocalVariable`, differing only in the DWARF tag underneath (`DW_TAG_formal_parameter` versus `DW_TAG_variable`); `ArgumentNumber`, 1-based, is what tells the parameter case its position. `insertDeclare` is what actually emits the debug-info record binding this `alloca` to that descriptor, so a debugger knows where in memory to find the variable's current value. I call this from three places: once per argument in `FunctionDefinitionNode::codegen`, once per declared variable in `VarStatementNode::codegen`, and once in `ForStatementNode::codegen` when the loop introduces its own variable (`for var i = ...`, as opposed to reusing an existing one). All three land on the same `CurFunctionLine`, since that's the only line I'm tracking, so a `for`-loop variable's debug entry shows the function's `def` line rather than the line the `for` actually appears on.
+`DITypeFor(Type)` is what makes each declared variable's debug entry match its actual pyxc type — an `int8` local gets `Int8DIType`, a `bool` gets `BoolDIType`, and so on. `createParameterVariable` and `createAutoVariable` produce the same kind of node, `DILocalVariable`, differing only in the DWARF tag underneath (`DW_TAG_formal_parameter` versus `DW_TAG_variable`); `ArgumentNumber`, 1-based, is what tells the parameter case its position. `insertDeclare` is what actually emits the debug-info record binding this `alloca` to that descriptor, so a debugger knows where in memory to find the variable's current value. I call this from three places: once per argument in `FunctionDefinitionNode::codegen`, once per declared variable in `VariableStatementNode::codegen`, and once in `ForStatementNode::codegen` when the loop introduces its own variable (`for var i = ...`, as opposed to reusing an existing one). All three land on the same `CurFunctionLine`, since that's the only line I'm tracking, so a `for`-loop variable's debug entry shows the function's `def` line rather than the line the `for` actually appears on.
 
 ## Globals
 
@@ -354,7 +354,7 @@ static void EmitDebugGlobal(GlobalVariable *Global, StringRef Name,
 }
 ```
 
-A global has no `alloca` to declare against, so this takes a different path: I build a `DIGlobalVariableExpression` and attach it directly to the `GlobalVariable` IR node with `addDebugInfo`. `VarStatementNode::codegen` calls this whenever it creates a brand-new module-level global, not on every assignment, just the one time the global itself comes into existence.
+A global has no `alloca` to declare against, so this takes a different path: I build a `DIGlobalVariableExpression` and attach it directly to the `GlobalVariable` IR node with `addDebugInfo`. `VariableStatementNode::codegen` calls this whenever it creates a brand-new module-level global, not on every assignment, just the one time the global itself comes into existence.
 
 ## macOS Needs One More Step
 
