@@ -48,9 +48,7 @@ method-definition                 = "def" name "(" [ parameters ] ")"
                                     [ "->" type ] ":"
                                     ( simple-statement
                                       | end-of-lines block ) ;
-function-definition               = "def" function-signature [ "->" type ] ":"
-                                    ( simple-statement
-                                      | end-of-lines block ) ;
+function-definition               = "def" function-signature [ "->" type ] ":" suite ;
 external                          = "extern" "def" external-function-signature
                                     [ "->" type ] ;
 top-level-statement               = statement ;
@@ -90,7 +88,6 @@ compound-statement                = if-statement
                                     | switch-statement ;
 statement                         = simple-statement | compound-statement ;
 suite                             = simple-statement
-                                    | compound-statement
                                     | end-of-lines block ;
 return-statement                  = "return" [ expression ] ;
 break-statement                   = "break" ;

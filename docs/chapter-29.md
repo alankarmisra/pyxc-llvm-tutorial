@@ -119,7 +119,7 @@ An alias maps a name to a fully-resolved type: the same `(ValueType, StructName)
 *  GlobalVarTypes.clear();
 *  GlobalVarStructNames.clear();
 *  GlobalVarDecls.clear();
-*  VarScopes.clear();
+*  LocalVariableScopes.clear();
 *  VarStructScopes.clear();
 *  ...
 *}

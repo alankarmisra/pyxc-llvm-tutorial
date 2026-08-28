@@ -194,7 +194,7 @@ struct SourceLocation {
 };
 static SourceLocation CurrentTokenLocation;
 static SourceLocation LexerLocation = {1, 0};
-static void LogErrorAtLoc(const string &ErrorMessage, SourceLocation Loc);
+static void LogErrorAtLocation(const string &ErrorMessage, SourceLocation Location);
 static void LogInvalidNumberLiteralAtLocation(const string &Literal,
                                          SourceLocation Location);
 
@@ -408,7 +408,7 @@ static int getToken() {
         PendingTokens.push_back(tok_dedent);
       }
       if (CurrentIndentRead != IndentStack.back()) {
-        LogErrorAtLoc("inconsistent indentation", CurrentTokenLocation);
+        LogErrorAtLocation("inconsistent indentation", CurrentTokenLocation);
         PrintErrorSourceContext(CurrentTokenLocation);
         PendingTokens.clear();
         AtLineStart = false;
@@ -606,14 +606,14 @@ static void PrintErrorSourceContext(SourceLocation Location) {
   fprintf(stderr, "^~~~\n");
 }
 
-static void LogErrorAtLoc(const string &ErrorMessage, SourceLocation Loc) {
-  fprintf(stderr, "Error (Line %d, Column %d): %s\n", Loc.Line, Loc.Column, ErrorMessage.c_str());
-  PrintErrorSourceContext(Loc);
+static void LogErrorAtLocation(const string &ErrorMessage, SourceLocation Location) {
+  fprintf(stderr, "Error (Line %d, Column %d): %s\n", Location.Line, Location.Column, ErrorMessage.c_str());
+  PrintErrorSourceContext(Location);
 }
 
 static void LogInvalidNumberLiteralAtLocation(const string &Literal,
                                               SourceLocation Location) {
-  LogErrorAtLoc(("invalid number literal '" + Literal + "'"), Location);
+  LogErrorAtLocation(("invalid number literal '" + Literal + "'"), Location);
 }
 
 //===----------------------------------------===//
@@ -838,56 +838,65 @@ static std::map<string, std::unique_ptr<FunctionSignatureNode>> FunctionSignatur
 // Parse-time variable tracking for assignments.
 // Scopes are stacked: function scope plus nested block scopes.
 // for-loop variables are scoped to the loop body only.
-static vector<set<string>> VarScopes;
+static vector<set<string>> LocalVariableScopes;
 static int ParseLoopDepth = 0;
 
 static void BeginFunctionScope(const vector<string> &Parameters) {
-  VarScopes.clear();
-  VarScopes.emplace_back();
+  LocalVariableScopes.clear();
+  LocalVariableScopes.push_back({}); // I add the function's top-level local scope.
+  auto &FunctionScope = LocalVariableScopes.back();
+
   for (const auto &Parameter : Parameters)
-    VarScopes.front().insert(Parameter);
+    FunctionScope.insert(Parameter);
 }
 
-static void EndFunctionScope() { VarScopes.clear(); }
+static void EndFunctionScope() { LocalVariableScopes.clear(); }
 
-static void DeclareVar(const string &Name) {
-  if (VarScopes.empty())
-    return;
-  VarScopes.back().insert(Name);
-}
-
-static void BeginBlockScope() { VarScopes.emplace_back(); }
+static void BeginBlockScope() { LocalVariableScopes.push_back({}); }
 // Pop a block scope if one is active.
 // Size > 1 means a nested block inside a function; never pop the function scope
 // here. Size == 1 is only popped for top-level blocks (function scope is popped
 // in EndFunctionScope).
 static void EndBlockScope() {
-  if (VarScopes.size() > 1)
-    VarScopes.pop_back();
+  if (LocalVariableScopes.size() > 1)
+    LocalVariableScopes.pop_back();
 }
 
 static void BeginLoopScope(const string &Name) {
-  VarScopes.emplace_back();
-  VarScopes.back().insert(Name);
+  LocalVariableScopes.push_back({});
+
+  auto &LoopScope = LocalVariableScopes.back();
+  LoopScope.insert(Name);
 }
 
 static void EndLoopScope() {
-  if (VarScopes.size() > 1)
-    VarScopes.pop_back();
+  if (LocalVariableScopes.size() > 1)
+    LocalVariableScopes.pop_back();
+}
+
+static void DeclareVariable(const string &Name) {
+  if (LocalVariableScopes.empty())
+    return;
+
+  auto &CurrentLocalScope = LocalVariableScopes.back();
+  CurrentLocalScope.insert(Name);
 }
 
 // Check only the innermost scope (used for redeclaration checks).
-static bool IsDeclaredInCurrentScope(const string &Name) {
-  if (VarScopes.empty())
+static bool IsVariableDeclaredInCurrentScope(const string &Name) {
+  if (LocalVariableScopes.empty())
     return false;
-  return VarScopes.back().count(Name) > 0;
+
+  const auto &CurrentLocalScope = LocalVariableScopes.back();
+  return CurrentLocalScope.count(Name) > 0;
 }
 
-// IsDeclaredVar - Check all local scopes from innermost to outermost, then
+// IsVariableDeclared - Check all local scopes from innermost to outermost, then
 // fall back to globals. Used to validate assignments and references.
-static bool IsDeclaredVar(const string &Name) {
-  for (auto It = VarScopes.rbegin(); It != VarScopes.rend(); ++It) {
-    if (It->count(Name))
+static bool IsVariableDeclared(const string &Name) {
+  for (auto ScopeIterator = LocalVariableScopes.rbegin();
+       ScopeIterator != LocalVariableScopes.rend(); ++ScopeIterator) {
+    if (ScopeIterator->count(Name))
       return true;
   }
   return false;
@@ -920,7 +929,7 @@ void PrintEvaluationResult(double Result) {
 /// type so parse functions can write: return LogErrorExpression("message");
 unique_ptr<ExpressionNode> LogErrorExpression(const string &ErrorMessage) {
   SourceLocation Anchor = GetCaretAnchorLocation(CurrentTokenLocation, CurrentToken);
-  LogErrorAtLoc(ErrorMessage, Anchor);
+  LogErrorAtLocation(ErrorMessage, Anchor);
   return nullptr;
 }
 
@@ -942,7 +951,6 @@ static unique_ptr<ExpressionNode> ParseSimpleStatement();
 static unique_ptr<ExpressionNode> ParseLeadingNameSimpleStatement();
 static unique_ptr<ExpressionNode> ParseNonLeadingNameSimpleStatement();
 static unique_ptr<ExpressionNode> ParseBlock();
-static unique_ptr<ExpressionNode> ParseFunctionBody();
 static unique_ptr<ExpressionNode> ParseSuite();
 
 struct FunctionScopeGuard {
@@ -1091,11 +1099,11 @@ static unique_ptr<ExpressionNode> ParseForStatement() {
   getNextToken(); // eat name
 
   if (DeclaresVariable) {
-    if (IsDeclaredInCurrentScope(VariableName))
+    if (IsVariableDeclaredInCurrentScope(VariableName))
       return LogErrorExpression(
           ("Variable '" + VariableName + "' already declared in this scope")
               .c_str());
-  } else if (!IsDeclaredVar(VariableName)) {
+  } else if (!IsVariableDeclared(VariableName)) {
     return LogErrorExpression("Assignment to undeclared variable");
   }
 
@@ -1179,7 +1187,7 @@ static unique_ptr<ExpressionNode> ParseVariableStatement() {
     string ParsedName = Name;
     getNextToken(); // eat name
 
-    if (IsDeclaredInCurrentScope(ParsedName))
+    if (IsVariableDeclaredInCurrentScope(ParsedName))
       return LogErrorExpression(
           ("Variable '" + ParsedName + "' already declared in this scope").c_str());
 
@@ -1195,7 +1203,7 @@ static unique_ptr<ExpressionNode> ParseVariableStatement() {
     }
 
     VariableBindings.push_back({ParsedName, std::move(Init)});
-    DeclareVar(ParsedName);
+    DeclareVariable(ParsedName);
 
     if (CurrentToken != tok_comma)
       break;
@@ -1407,7 +1415,7 @@ static unique_ptr<ExpressionNode> ParseContinueStatement() {
 /// assignment-statement
 ///   = lvalue "=" expression ;
 static unique_ptr<ExpressionNode> ParseAssignmentRight(const string &Name) {
-  if (!IsDeclaredVar(Name))
+  if (!IsVariableDeclared(Name))
     return LogErrorExpression("Assignment to undeclared variable");
   getNextToken(); // eat '='
 
@@ -1480,7 +1488,7 @@ static unique_ptr<ExpressionNode> ParseStatement() {
 }
 
 /// suite
-///   = simple-statement | compound-statement | end-of-lines block ;
+///   = simple-statement | end-of-lines block ;
 static unique_ptr<ExpressionNode> ParseSuite() {
   if (CurrentToken == tok_eol) {
     consumeNewlines();
@@ -1489,10 +1497,7 @@ static unique_ptr<ExpressionNode> ParseSuite() {
     return ParseBlock(); // CurrentToken = tok_block_end on return
   }
 
-  if (CurrentToken == tok_indent)
-    return ParseBlock(); // CurrentToken = tok_block_end on return
-
-  return ParseStatement();
+  return ParseSimpleStatement();
 }
 
 /// block
@@ -1583,26 +1588,8 @@ static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
 
   return make_unique<FunctionSignatureNode>(FunctionName, std::move(ParameterNames));
 }
-
-/// I parse either an inline simple statement or an indented block as a
-/// function body.
-static unique_ptr<ExpressionNode> ParseFunctionBody() {
-  // Allow the function body to start on the next line:
-  //   def foo(x):
-  //     x + 1
-  if (CurrentToken == tok_eol) {
-    consumeNewlines();
-    if (CurrentToken != tok_indent)
-      return LogErrorExpression("Expected an indented block");
-    return ParseBlock(); // CurrentToken = tok_block_end on return
-  }
-
-  return ParseSimpleStatement();
-}
-
 /// function-definition
-///   = "def" function-signature ":"
-///     ( simple-statement | end-of-lines block ) ;
+///   = "def" function-signature ":" suite ;
 static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
   getNextToken(); // eat 'def'
   auto Signature = ParseFunctionSignature();
@@ -1614,7 +1601,7 @@ static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
     return LogErrorFunction("Expected ':' in function definition");
   getNextToken(); // eat ':'
 
-  unique_ptr<ExpressionNode> Body = ParseFunctionBody();
+  unique_ptr<ExpressionNode> Body = ParseSuite();
   if (Body)
     return make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(Body));
   return nullptr;
@@ -1638,7 +1625,7 @@ static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
       return LogErrorFunction("Destination of '=' must be a variable");
 
     string Name = *AssignedName;
-    if (!IsDeclaredVar(Name))
+    if (!IsVariableDeclared(Name))
       return LogErrorFunction("Assignment to undeclared variable");
 
     getNextToken(); // eat '='

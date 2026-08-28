@@ -5,7 +5,7 @@ description: "Switch from expression-only bodies to statement blocks with indent
 
 ## What I Am Building
 
-[Chapter 11](chapter-11.md) added mutable variables, but a function body was still a single expression. `var` needed a `:` and a body expression, and `for` loops were expressions that produced `0.0`. I introduce real statement blocks and indentation-sensitive syntax, so I can write code the way I actually want to:
+I've finally come to the part where I can make functions expand beyond single-line monstrosities. This is how I want to write code. Like a regular person. Thoughts spread over multiple lines.
 
 <!-- code-merge:start -->
 ```pyxc
@@ -29,19 +29,33 @@ cd pyxc-llvm-tutorial/code/chapter-12
 
 ## Grammar
 
-The central shift: I move `if`, `for`, `var`, and (new) `return` out of the expression grammar and make them statements. Expressions go back to being purely value-producing — I add `statement`, `simple-statement`, `compound-statement`, `suite`, and `block` to hold them, plus `indent`/`dedent`/`INDENT`/`DEDENT`/`BLOCK_END` for the indentation machinery:
+I'm going to move `if`, `for`, `var`, and (new) `return` out of the `expression` grammar and make them `statements` so they don't return values. The value producing expressions remain.
 
 `code/chapter-12/pyxc.ebnf`
 
 ```grammardiff
-*...
+*(*
+*   pyxc.ebnf
+-   Grammar for chapter 11 — Mutable variables.
++   Grammar for chapter 12 — Statement blocks.
+**)
+*
+*(*
+*   { } = zero or more (any number of...)
+*   [ ] = zero or one (optional)
+**)
++
+*program                           = [ end-of-lines ]
+*                                    [ top-level-item
+*                                      { end-of-lines top-level-item } ]
+*                                    [ end-of-lines ] ;
+*end-of-lines                      = end-of-line { end-of-line } ;
+*top-level-item                    = function-definition
 *                                    | external
 *                                    | top-level-expression ;
 -function-definition               = "def" function-signature ":"
 -                                    [ end-of-lines ] expression ;
-+function-definition               = "def" function-signature ":"
-+                                    ( simple-statement
-+                                      | end-of-lines block ) ;
++function-definition               = "def" function-signature ":" suite ;
 *external                          = "extern" "def" function-signature ;
 *top-level-expression              = expression ;
 *function-signature                = name "(" [ parameters ] ")" ;
@@ -70,7 +84,6 @@ The central shift: I move `if`, `for`, `var`, and (new) `return` out of the expr
 +compound-statement                = if-statement | for-statement ;
 +statement                         = simple-statement | compound-statement ;
 +suite                             = simple-statement
-+                                    | compound-statement
 +                                    | end-of-lines block ;
 +return-statement                  = "return" expression ;
 +statement-separator               = end-of-lines | BLOCK_END ;
@@ -96,6 +109,7 @@ The central shift: I move `if`, `for`, `var`, and (new) `return` out of the expr
 -for-expression                    = "for" [ "var" ] name "=" expression ","
 -                                    expression "," expression ":"
 -                                    [ end-of-lines ] expression ;
+-(* The final expression performs the complete loop update; its value is discarded. *)
 -name-expression                   = name
 -                                    | call-expression ;
 +                                    | parenthesized-expression ;
@@ -108,8 +122,21 @@ The central shift: I move `if`, `for`, `var`, and (new) `return` out of the expr
 +dedent                            = DEDENT ;
 *name                              = (letter | "_")
 *                                    { letter | digit | "_" } ;
-*...
+*number                            = digit { digit } [ "." { digit } ]
+*                                    | "." digit { digit } ;
+*letter                            = "A".."Z" | "a".."z" ;
+*digit                             = "0".."9" ;
+*end-of-line                       = "\r\n" | "\r" | "\n" ;
+*(*
+*    A `comment` begins with "#" and continues to the end of the line. The lexer
+*     ignores its text and returns an end-of-line token when one follows it.
+**)
+*comment                           = "#" { comment-character } ;
 *comment-character                 = ? any character except "\r" and "\n" ? ;
+*(*
+*    `whitespace` may appear before or between tokens
+*     and is ignored by the lexer.
+**)
 *whitespace                        = " " | "\t" | "\v" | "\f" ;
 +INDENT                            = ? synthetic token emitted by lexer when indentation increases ? ;
 +DEDENT                            = ? synthetic token emitted by lexer when indentation decreases ? ;
@@ -117,13 +144,36 @@ The central shift: I move `if`, `for`, `var`, and (new) `return` out of the expr
 +                                      immediately after it consumes DEDENT ? ;
 ```
 
-Assignment is no longer a general expression in this statement-oriented
-grammar, but a `for` loop still needs an assignment in its update field. I make
-that role explicit with `for-update`: it accepts either an assignment statement
-or an ordinary expression. In both cases the loop evaluates it after the body
-and discards its value.
+There's one small problem. Assignment is a statement now, but a `for` loop
+still needs a way to change its loop variable:
 
-- **`suite`** — what follows a `:`. Either a single statement on the same line, or a newline followed by an indented block.
+```pyxc
+for i = 0, i < 10, i = i + 1:
+```
+
+The last part, `i = i + 1`, runs after the loop body. It changes `i` so the loop
+can move on to the next round.
+
+That's why the grammar has `for-update`. It can be an assignment like this one,
+or another expression. Pyxc runs it, then ignores the value it gives back. The
+loop does not change `i` by itself — the update has to do that.
+
+- **`suite`** — what follows a `:`. Either a simple statement on the same line, or a newline followed by an indented block.
+
+  This suite is a single statement on the same line:
+
+  ```pyxc
+  if x: return 1
+  ```
+
+  This suite is an indented block containing two statements:
+
+  ```pyxc
+  if x:
+      var y = 1
+      return y
+  ```
+
 - **`simple-statement`** — statements that fit on one line: `return`, `var`, assignment, or a bare expression.
 - **`compound-statement`** — statements that introduce a new suite: `if` and `for`.
 - **`statement-separator`** — what separates two statements inside a block. Normally that's one or more newlines. But when the first statement was itself a block (an `if` or `for` with an indented body), no newline follows — I already consumed the line break as part of the `DEDENT`. I use `BLOCK_END` to cover that case; see below.
@@ -139,28 +189,33 @@ def f():
                    # ← DEDENT emitted here (indentation decreased)
 ```
 
-**A side effect of this grammar change.** In [chapter 11](chapter-11.md), `var` was an expression with a body — `var x = 5: x + 1`. The variable and the code that used it were one syntactic unit, so its lifetime was self-contained. Now that `var` is a free-standing statement, a variable declared in one statement could in principle be referenced in any later statement — including one compiled in a completely separate module.
+### Top-Level `var` Declarations
 
-That's the problem. In the REPL, each top-level input compiles into its own throw-away module, freed right after evaluation. A `var` at the top level would need its storage to survive across module boundaries, which the current JIT design doesn't support yet. [Chapter 15](chapter-15.md) fixes this properly, for both the REPL and compiled executables.
+Top-level `var` declarations are not supported yet. Each REPL input compiles into a temporary module that is discarded after evaluation, so variable storage created by one input would not be available to later inputs. The REPL rejects the declaration, and the next input still has no variable named `count`:
 
-## Statements vs Expressions
+<!-- code-merge:start -->
+```pyxc
+ready> var count = 0
+```
+```text
+Error (Line 1, Column 1): Unexpected 'var'
+```
+```pyxc
+ready> count = count + 1
+```
+```text
+Error (Line 2, Column 7): Assignment to undeclared variable
+```
+<!-- code-merge:end -->
 
-Before this chapter, `if`, `for`, and `var` were expressions — they produced a value and could be nested:
+For now, declare and use mutable variables inside a function, where their storage lasts for the duration of that function call:
 
 ```pyxc
-var acc = 0: for var i = 1, ...: acc = acc + i
+def increment():
+    var count = 0
+    count = count + 1
+    return count
 ```
-
-Statements don't produce values — they *do* things. Once `if`, `for`, `var`, and `return` are statements, a function body becomes a flat list of them:
-
-```pyxc
-var acc = 0
-for var i = 1, ...:
-    acc = acc + i
-return acc
-```
-
-I no longer handle `var`, `if`, `for`, or assignment in `ParseExpression`. I moved them all into `ParseStatement` and `ParseSimpleStatement`. Expressions are purely value-producing again — operators, calls, variable reads.
 
 ## New Tokens and AST Nodes
 
@@ -291,30 +346,53 @@ public:
 
 ## pyxc Indentation Rules
 
-Similar to Python's, with one difference: pyxc allows mixing tabs and spaces (Python 3 disallows it).
+Pyxc handles indentation much like Python. The main difference is that I allow
+tabs and spaces to be mixed as long as they end at the right column. Python 3
+can reject mixed indentation.
 
-- Each space advances one column; each tab advances to the next multiple of 8.
-- Mixing tabs and spaces is allowed — the column count is what matters.
-- Dedenting to a column that was never opened is an error.
-- Blank lines and comment-only lines don't affect indentation in file mode. In REPL mode, a blank line closes the current block immediately.
-- A block opens after `:` followed by a newline and a deeper indentation level.
+- A space moves forward by one column.
+- A tab moves to the next tab stop: column 8, 16, 24, and so on.
+- Tabs and spaces can be mixed. Only the final column matters.
+- When a line moves back to the left, it must return to an indentation level I
+  have seen before. If it does not, I report an error.
+- Blank lines and lines with only a comment do not change indentation in a
+  file. In the REPL, a blank line ends the current block.
+- A block starts when a line ends with `:` and the next line is indented
+  farther.
 
 ## INDENT and DEDENT
 
-A single counter isn't enough to track indentation — I need to remember every level I opened, for nested blocks. When indentation drops, I need to know which level I'm returning to, and how many blocks I'm closing at once. That's why I keep an `IndentStack` and a pending-token queue.
+An indentation level tells me how far a line starts from the left side of the
+page. I find it by counting the spaces and tabs before the first real character
+on the line. A line with no spaces starts at level `0`. Four spaces give it
+level `4`. A tab at the start of a line gives it level `8`.
 
-At the start of each line, I find the indentation level and compare it to the top of the stack. An increase returns `INDENT` right away — no queue involved. A decrease is different: I queue one `DEDENT` per level closed and return only the first one, so a single line that closes several levels at once still gets drained by the parser one `DEDENT` at a time:
+One number is not enough to track these levels. A block can sit inside another
+block, so I need to remember every level I entered. I store them in
+`IndentStack`.
+
+I check the indentation level at the start of each line. If the new line moves
+farther to the right, I add its level to the stack and return `INDENT`.
+
+Moving back to the left can close more than one block:
 
 ```pyxc
-def f(x):            # Stack: [0]         Pending: []
-    if x > 0:        # Stack: [0, 4]      Pending: []        → INDENT
-        if x > 10:   # Stack: [0, 4, 8]   Pending: []        → INDENT
-            return x # Stack: [0, 4, 8, 12]  Pending: []     → INDENT
-    return 0         # col 4 is less than both 12 and 8: two levels closed, two DEDENTs queued
-                     # Stack: [0, 4]      Pending: [DEDENT]  → returns the first DEDENT now
-                     # the second DEDENT stays queued; the next getToken() call drains it
-                     #   before it even looks at whatever line comes after "return 0"
+def f(x):             # Stack: [0]            Pending: []
+    if x > 0:         # Stack: [0, 4]         Pending: []         → INDENT
+        if x > 10:    # Stack: [0, 4, 8]      Pending: []         → INDENT
+            return x  # Stack: [0, 4, 8, 12]  Pending: []         → INDENT
+    return 0          # Level 4 is below 12 and 8, so two blocks close.
+                      # Stack: [0, 4]          Pending: [DEDENT]   → returns one DEDENT
+                      # The other DEDENT stays in the queue.
+                      # The next getToken() call returns it before reading `return 0`.
 ```
+
+Each `DEDENT` tells the parser that one block has ended. Here, the line moves
+from level `12` back to level `4`, so two blocks end at the same time.
+
+The lexer can return only one token at a time. It returns the first `DEDENT` and
+saves the other one in `PendingTokens`. The parser receives that saved token
+the next time it asks for one.
 
 Blocks are also automatically closed at end of file — no trailing blank line needed:
 
@@ -326,13 +404,25 @@ def f():
                      # the parser drains it on the next getNextToken() call
 ```
 
-Let's start by defining the structures we need to track indents/dedents.
+## Implementing indent awareness
+
+I'll start by defining the structures we need to track indents/dedents.
 
 ```cpp
 static vector<int> IndentStack = {0}; // starts at column 0
 static deque<int>  PendingTokens;     // buffered tokens the parser hasn't seen yet
 static bool AtLineStart = true;       // true right after a newline
 static constexpr int IndentTabWidth = 8; // tab width
+```
+
+and I'm going to define an additional error logging function too for printing indentation errors from the Lexer:
+
+```cpp
+static void LogErrorAtLocation(const string &ErrorMessage, SourceLocation Location) {
+  fprintf(stderr, "Error (Line %d, Column %d): %s\n", Location.Line, Location.Column,
+          ErrorMessage.c_str());
+  PrintErrorSourceContext(Location);
+}
 ```
 
 Inside `getToken()`, I process indentation at the start of every line, before any normal token logic.
@@ -370,12 +460,12 @@ This is the start of `getToken()` itself — the indentation check comes before 
 
 A tab always snaps forward to the next 8-column boundary, never backward and never past it.
 
-For a blank line or a comment-only line, I return `tok_eol` here without touching the indent stack (in the REPL, I close the current block immediately on a blank line instead). For EOF, I fall through to the flush logic further below. For real source content, I fall through to Step 2.
+For real source content, I fall through to Step 2. Three other cases short-circuit before that: a blank line, a comment-only line, and EOF — that's Step 3.
 
 **Step 2: Compare to the top of the stack and either return `tok_indent` directly or queue `DEDENT` tokens.**
 
 ```cppdiff
-~      CurrentIndentRead ~= (LastChar == ' ')
+~      CurrentIndentRead += (LastChar == ' ')
 ~              ? 1 : (IndentTabWidth - CurrentIndentRead % IndentTabWidth);
 ~      LastChar = advance();
 ~    }
@@ -397,7 +487,7 @@ For a blank line or a comment-only line, I return `tok_eol` here without touchin
 +      PendingTokens.push_back(tok_dedent);
 +    }
 +    if (CurrentIndentRead != IndentStack.back()) {
-+      LogErrorAtLoc("inconsistent indentation", CurrentTokenLocation);
++      LogErrorAtLocation("inconsistent indentation", CurrentTokenLocation);
 +      PrintErrorSourceContext(CurrentTokenLocation);
 +      PendingTokens.clear();
 +      AtLineStart = false;
@@ -413,55 +503,20 @@ For a blank line or a comment-only line, I return `tok_eol` here without touchin
 +  AtLineStart = false;
 ```
 
-**Step 3: On the next call, drain the rest of the queue before doing anything else.**
+Now that I've covered how I actually compute an indent or dedent and maintain the stack, it's time to deal with three special cases: a blank line, a comment-only line, and EOF. In the real source, all three of these checks run *before* Step 2's comparison — not after, the way I've presented them here. I'm covering the main path first and circling back for a reason: none of these three lines carry real content, so none of them should ever be compared against the indent stack at all. A blank line's "indentation" is meaningless — it's just whitespace followed immediately by a newline, not the start of a statement at some column. A comment-only line is the same: whatever column the `#` sits at says nothing about block structure. And EOF isn't a line at all. If any of these fell through into Step 2's logic, I'd risk opening or closing blocks based on columns that were never meant to mean anything — a comment indented four spaces shouldn't dedent anything, and a truly blank line shouldn't either. So the real function checks and returns early for all three *before* it ever reaches the comparison I just walked through, which is why the code below jumps back to a point earlier in the function than where Step 2 left off.
 
-I leave any `DEDENT` tokens from a multi-level dedent, or from Step 2's queuing, sitting in `PendingTokens` for the next call to consume. I check for them right at the top of `getToken()`, before the line-start logic even runs:
-
-```cppdiff
-~static int getToken() {
-~  static int LastChar = ' ';
-~
-+  // Drain tokens queued by a multi-level dedent on the previous line.
-+  if (!PendingTokens.empty()) {
-+    int Tok = PendingTokens.front();
-+    PendingTokens.pop_front();
-+    return Tok;
-+  }
-~
-~  CurrentTokenLocation = LexerLocation;
-~  int CurrentIndentOnStack = IndentStack.back();
-```
-
-I call `getToken()` again for each subsequent token, and each call drains one more entry from the queue before I return to normal lexing.
-
-At EOF, the lexer flushes one `DEDENT` per still-open block:
+**Step 3: Handle a blank line, a comment-only line, or EOF, before comparing anything to the indent stack.**
 
 ```cppdiff
 ~static int getToken() {
 ~  ...
 ~  if (AtLineStart) {
 ~    ...
-+    // EOF (with or without trailing newline): flush open blocks one at a time.
-+    if (LastChar == EOF) {
-+      if (IndentStack.size() > 1) {
-+        IndentStack.pop_back();
-+        return tok_dedent;
-+      }
-+      return tok_eof;
-+    }
-~    ...
-~  }
-~  ...
-~}
-```
-
-Two more checks happen before that one, inside the same block — a blank line, and a comment-only line:
-
-```cppdiff
-~static int getToken() {
-~  ...
-~  if (AtLineStart) {
-~    ...
+~     CurrentIndentRead += (LastChar == ' ')
+~              ? 1 : (IndentTabWidth - CurrentIndentRead % IndentTabWidth);
+~      LastChar = advance();
+~    }
+~
 +    // Blank line: ignore in file mode; close the block immediately in REPL.
 +    if (LastChar == '\n') {
 +      if (IsRepl && IndentStack.size() > 1) {
@@ -485,7 +540,19 @@ Two more checks happen before that one, inside the same block — a blank line, 
 +      }
 +      // else fall through to EOF handling below
 +    }
-~    ...
++
++    // EOF (with or without trailing newline): flush open blocks one at a time.
++    if (LastChar == EOF) {
++      if (IndentStack.size() > 1) {
++        IndentStack.pop_back();
++        return tok_dedent;
++      }
++      return tok_eof;
++    }
+~
+~    // Real content: compare column to the indent stack.
+~    CurrentTokenLocation = LexerLocation;
+~    int CurrentIndentOnStack = IndentStack.back();
 ~  }
 ~  ...
 ~}
@@ -493,33 +560,43 @@ Two more checks happen before that one, inside the same block — a blank line, 
 
 A blank line in file mode is just `tok_eol` — I don't touch the indent stack, so nothing about the surrounding blocks changes. In the REPL, a blank line ends the current block immediately instead: I can't count on an actual dedented line ever showing up, since the user might just hit Enter twice to say "I'm done with this block," so I treat the blank line itself as that signal — the same behavior as the Python REPL.
 
-A comment-only line is simpler still: I consume everything up to the newline and return `tok_eol`, same as a blank line, indent stack untouched. If the comment runs to the end of the file with no trailing newline, `LastChar` is now `EOF` — that's the fallthrough the comment refers to, and it's exactly the EOF handling I covered above.
+A comment-only line is simpler still: I consume everything up to the newline and return `tok_eol`, same as a blank line, indent stack untouched. If the comment runs to the end of the file with no trailing newline, `LastChar` is now `EOF` — that's the fallthrough the comment refers to, the EOF check right below it in the same block.
 
-### Inconsistent indentation
+Note that the code above handles comment-only lines:
 
-When indentation increases, I never go through `PendingTokens` at all — I return `tok_indent` immediately. When it decreases, I can close several levels at once: for each closed level, I push one `tok_dedent` onto `PendingTokens`, and I return the first one from this call. I drain the rest on later calls to `getToken()`, through the check at the very top of the function (see Step 3 below). A single dedent can therefore produce multiple `DEDENT` tokens — one for each level I close:
-
-<!-- code-merge:start -->
 ```pyxc
-ready> def f():
-    var x = 1
-   var y = 2
+    # explain what happens here
 ```
-```text
-Error (Line 3, Column 4): inconsistent indentation
-   v
-   ^~~~
-   v
-   ^~~~
-Error (Line 3, Column 4): Unexpected error
-   v
-   ^~~~
+
+Lines with a comment after real code are handled later, outside `AtLineStart`:
+
+```pyxc
+return 1  # explain the result
 ```
-<!-- code-merge:end -->
 
-Dedenting to column 3 has no match on the stack (`[0, 4]`) — it's neither the current indentation nor an outer one, so there's no consistent level to return to. By the time I discover that, I may already have queued one or more `DEDENT` tokens while searching the stack. Those tokens do not describe a valid transition, so I clear them before returning `tok_error`. I also set `AtLineStart` to `false` because the lexer has already consumed the line's leading whitespace. Without that reset, recovery can mistake the remaining text for the beginning of another line and lex it a second time.
+By that point, I have already handled the line's indentation.
 
-The parser still reports `Unexpected error` after the lexer reports the inconsistent indentation. That is the normal boundary between the two layers: the lexer returns `tok_error`, and the parser reports that the token cannot begin the statement it was parsing. The important part is that recovery now consumes the rest of the malformed line instead of exposing its remaining tokens as a bogus new statement.
+EOF itself flushes one `DEDENT` per still-open block, one at a time, the same way a real dedent line does — it just never runs out of lines to keep calling `getToken()` on, so I use `LastChar == EOF` as the trigger instead of a column comparison.
+
+**Step 4: On the next call, drain the rest of the queue before doing anything else.**
+
+Step 2's dedent branch can queue more than one `DEDENT` — one per level closed — but only returns the first. I leave the rest sitting in `PendingTokens` for later calls to consume. I check for them right at the top of `getToken()`, before the line-start logic even runs:
+
+```cppdiff
+~static int getToken() {
+~  static int LastChar = ' ';
+~
++  // Drain tokens queued by a multi-level dedent on the previous line.
++  if (!PendingTokens.empty()) {
++    int Tok = PendingTokens.front();
++    PendingTokens.pop_front();
++    return Tok;
++  }
+~
+~  if (AtLineStart) {
+```
+
+I call `getToken()` again for each subsequent token, and each call drains one more entry from the queue before I return to normal lexing.
 
 ## Parse-Time Variable Tracking
 
@@ -536,58 +613,70 @@ x =
 ```
 <!-- code-merge:end -->
 
-To catch this, I keep a scope stack of declared variable names — a function scope at the bottom, plus one nested scope per block:
+To catch this, I keep a list of active scopes. The first scope holds the
+function's parameters and variables. Each nested block adds another scope to
+the end of the list:
 
 ```cpp
-static vector<set<string>> VarScopes;
+static vector<set<string>> LocalVariableScopes;
 
 static void BeginFunctionScope(const vector<string> &Parameters) {
-  VarScopes.clear();
-  VarScopes.emplace_back();
+  LocalVariableScopes.clear();
+  LocalVariableScopes.push_back({}); // I add the function's top-level local scope.
+  auto &FunctionScope = LocalVariableScopes.back();
+
   for (const auto &Parameter : Parameters)
-    VarScopes.front().insert(Parameter); // parameters are pre-declared
+    FunctionScope.insert(Parameter); // parameters are pre-declared
 }
 
-static void EndFunctionScope() { VarScopes.clear(); }
+static void EndFunctionScope() { LocalVariableScopes.clear(); }
 
-static void DeclareVar(const string &Name) {
-  if (VarScopes.empty())
-    return;
-  VarScopes.back().insert(Name); // declare in the innermost (current) scope
-}
-
-static void BeginBlockScope() { VarScopes.emplace_back(); }
+static void BeginBlockScope() { LocalVariableScopes.push_back({}); }
 static void EndBlockScope() {
-  if (VarScopes.size() > 1)
-    VarScopes.pop_back();
+  if (LocalVariableScopes.size() > 1)
+    LocalVariableScopes.pop_back();
 }
 
 static void BeginLoopScope(const string &Name) {
-  VarScopes.emplace_back();
-  VarScopes.back().insert(Name);
+  LocalVariableScopes.push_back({});
+
+  auto &LoopScope = LocalVariableScopes.back();
+  LoopScope.insert(Name);
 }
 static void EndLoopScope() {
-  if (VarScopes.size() > 1)
-    VarScopes.pop_back();
+  if (LocalVariableScopes.size() > 1)
+    LocalVariableScopes.pop_back();
+}
+
+static void DeclareVariable(const string &Name) {
+  if (LocalVariableScopes.empty())
+    return;
+
+  auto &CurrentLocalScope = LocalVariableScopes.back();
+  CurrentLocalScope.insert(Name); // declare in the innermost (current) scope
 }
 
 // Check only the innermost scope (used for redeclaration checks).
-static bool IsDeclaredInCurrentScope(const string &Name) {
-  if (VarScopes.empty())
+static bool IsVariableDeclaredInCurrentScope(const string &Name) {
+  if (LocalVariableScopes.empty())
     return false;
-  return VarScopes.back().count(Name) > 0;
+
+  const auto &CurrentLocalScope = LocalVariableScopes.back();
+  return CurrentLocalScope.count(Name) > 0;
 }
 
 // Check all local scopes from innermost to outermost.
-static bool IsDeclaredVar(const string &Name) {
-  for (auto It = VarScopes.rbegin(); It != VarScopes.rend(); ++It)
-    if (It->count(Name))
+static bool IsVariableDeclared(const string &Name) {
+  for (auto ScopeIterator = LocalVariableScopes.rbegin();
+       ScopeIterator != LocalVariableScopes.rend(); ++ScopeIterator) {
+    if (ScopeIterator->count(Name))
       return true;
+  }
   return false;
 }
 ```
 
-I use `IsDeclaredInCurrentScope` and `IsDeclaredVar` to answer two different questions: whether I'm redeclaring the same name in the same block, and whether I'm referencing a name that was never declared anywhere visible. I use the first one for `var`'s own redeclaration check:
+I use `IsVariableDeclaredInCurrentScope` and `IsVariableDeclared` to answer two different questions: whether I'm redeclaring the same name in the same block, and whether I'm referencing a name that was never declared anywhere visible. I use the first one for `var`'s own redeclaration check:
 
 <!-- code-merge:start -->
 ```pyxc
@@ -642,7 +731,21 @@ static unique_ptr<ExpressionNode> ParseForStatement() {
 
 ## Parsing a Suite
 
-After every `:`, I call `ParseSuite`. A suite is either an inline statement or an indented block:
+After every `:`, I call `ParseSuite`. A suite is either a simple statement on the same line or an indented block. An inline suite cannot contain another `if` or `for`. Once a body needs more control flow, I make the indentation show it:
+
+```pyxc
+if x > 0: return 1
+
+if x > 0:
+    if y > 0:
+        return 1
+```
+
+This is not allowed:
+
+```pyxc
+if x > 0: if y > 0: return 1
+```
 
 ```cpp
 static unique_ptr<ExpressionNode> ParseSuite() {
@@ -652,15 +755,13 @@ static unique_ptr<ExpressionNode> ParseSuite() {
       return LogErrorExpression("Expected an indented block");
     return ParseBlock(); // CurrentToken = tok_block_end on return
   }
-  if (CurrentToken == tok_indent)
-    return ParseBlock(); // CurrentToken = tok_block_end on return
-  return ParseStatement();
+  return ParseSimpleStatement();
 }
 ```
 
 When I delegate from `ParseSuite` to `ParseBlock`, I return exactly what `ParseBlock` returns, with `CurrentToken = tok_block_end`. Any caller can inspect `CurrentToken` to know whether the suite ended with a block.
 
-I call `ParseSuite` from both `ParseIfStatement` and `ParseForStatement`, after eating `:`. I handle a `def` body slightly differently — its inline form only accepts a `simple-statement`, not a compound one, so I don't accept `def f(x): if x > 0: return 1` on one line.
+I use this same rule for `def`, `if`, and `for`. Their one-line bodies stay short and simple. If a body contains another compound statement, it must go in an indented block.
 
 ## Parsing a Block
 
@@ -835,7 +936,7 @@ In `ParseAssignmentRight`, I actually run the undeclared-variable check:
 
 ```cpp
 static unique_ptr<ExpressionNode> ParseAssignmentRight(const string &Name) {
-  if (!IsDeclaredVar(Name))
+  if (!IsVariableDeclared(Name))
     return LogErrorExpression("Assignment to undeclared variable");
   getNextToken(); // eat '='
 
@@ -865,7 +966,7 @@ static unique_ptr<ExpressionNode> ParseVariableStatement() {
     string ParsedName = Name;
     getNextToken(); // eat name
 
-    if (IsDeclaredInCurrentScope(ParsedName))
+    if (IsVariableDeclaredInCurrentScope(ParsedName))
       return LogErrorExpression(
           ("Variable '" + ParsedName + "' already declared in this scope").c_str());
 
@@ -880,7 +981,7 @@ static unique_ptr<ExpressionNode> ParseVariableStatement() {
     }
 
     VariableBindings.push_back({ParsedName, std::move(Init)});
-    DeclareVar(ParsedName);
+    DeclareVariable(ParsedName);
 
     if (CurrentToken != tok_comma)
       break;
@@ -891,7 +992,7 @@ static unique_ptr<ExpressionNode> ParseVariableStatement() {
 }
 ```
 
-The critical difference from [chapter 11](chapter-11.md): no `:` and no body. I register each name in the current block scope via `DeclareVar`, so later assignments to it pass `IsDeclaredVar`. If the `var` is inside an `if` or `for` block, that name is only visible inside that block.
+The critical difference from [chapter 11](chapter-11.md): no `:` and no body. I register each name in the current block scope via `DeclareVariable`, so later assignments to it pass `IsVariableDeclared`. If the `var` is inside an `if` or `for` block, that name is only visible inside that block.
 
 ## Return
 
@@ -1115,7 +1216,7 @@ static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
       return LogErrorFunction("Destination of '=' must be a variable");
 
     string Name = *AssignedName;
-    if (!IsDeclaredVar(Name))
+    if (!IsVariableDeclared(Name))
       return LogErrorFunction("Assignment to undeclared variable");
 
     getNextToken(); // eat '='
@@ -1132,7 +1233,7 @@ static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
 }
 ```
 
-Since the scope is fresh and empty every time, `IsDeclaredVar` can never succeed for a top-level assignment — that's exactly the "Assignment to undeclared variable" limitation shown below, and this is the code path that produces it. I wrap the whole expression, assignment or not, in a `ReturnStatementNode` before handing it to `FunctionDefinitionNode`, so a top-level expression's value now reaches the caller through an explicit `return` rather than the old unconditional `CreateRet` at the end of `FunctionDefinitionNode::codegen`.
+Since the scope is fresh and empty every time, `IsVariableDeclared` can never succeed for a top-level assignment — that's exactly the "Assignment to undeclared variable" limitation shown below, and this is the code path that produces it. I wrap the whole expression, assignment or not, in a `ReturnStatementNode` before handing it to `FunctionDefinitionNode`, so a top-level expression's value now reaches the caller through an explicit `return` rather than the old unconditional `CreateRet` at the end of `FunctionDefinitionNode::codegen`.
 
 ## Known Limitations
 

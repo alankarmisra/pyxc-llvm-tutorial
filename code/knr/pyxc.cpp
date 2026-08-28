@@ -1768,7 +1768,7 @@ static std::map<string, std::pair<ValueType, string>> TypeAliases;
 // Parse-time variable tracking for assignments and types.
 // Scopes are stacked: function scope plus nested block scopes.
 // for-loop variables are scoped to the loop body only.
-static vector<std::map<string, ValueType>> VarScopes;
+static vector<std::map<string, ValueType>> LocalVariableScopes;
 static vector<std::map<string, string>> VarStructScopes;
 // Global variables declared at top level (persist across modules).
 static std::map<string, ValueType> GlobalVarTypes;
@@ -1817,37 +1817,29 @@ struct ParseSwitchGuard {
 };
 
 static void BeginFunctionScope(const vector<PrototypeAST::ArgInfo> &Args) {
-  VarScopes.clear();
+  LocalVariableScopes.clear();
   VarStructScopes.clear();
-  VarScopes.emplace_back();
-  VarStructScopes.emplace_back();
+  LocalVariableScopes.push_back({}); // I add the function's top-level local scope.
+  VarStructScopes.push_back({});
+  auto &FunctionScope = LocalVariableScopes.back();
+  auto &FunctionStructScope = VarStructScopes.back();
+
   for (const auto &Arg : Args) {
-    VarScopes.front()[Arg.Name] = Arg.Type;
+    FunctionScope[Arg.Name] = Arg.Type;
     if (Arg.Type == ValueType::Struct || Arg.Type == ValueType::Pointer ||
         Arg.Type == ValueType::Array)
-      VarStructScopes.front()[Arg.Name] = Arg.StructName;
+      FunctionStructScope[Arg.Name] = Arg.StructName;
   }
 }
 
 static void EndFunctionScope() {
-  VarScopes.clear();
+  LocalVariableScopes.clear();
   VarStructScopes.clear();
 }
 
-static void DeclareVar(const string &Name, ValueType Type,
-                       const string &StructName = "") {
-  // Only declare into an active local scope; at top level VarScopes is empty.
-  if (VarScopes.empty())
-    return;
-  VarScopes.back()[Name] = Type;
-  if (Type == ValueType::Struct || Type == ValueType::Pointer ||
-      Type == ValueType::Array)
-    VarStructScopes.back()[Name] = StructName;
-}
-
 static void BeginBlockScope() {
-  VarScopes.emplace_back();
-  VarStructScopes.emplace_back();
+  LocalVariableScopes.push_back({});
+  VarStructScopes.push_back({});
 }
 
 // Pop a block scope if one is active.
@@ -1855,47 +1847,43 @@ static void BeginBlockScope() {
 // here. Size == 1 is only popped for top-level blocks (function scope is popped
 // in EndFunctionScope).
 static void EndBlockScope() {
-  if (VarScopes.size() > 1) {
-    VarScopes.pop_back();
+  if (LocalVariableScopes.size() > 1) {
+    LocalVariableScopes.pop_back();
     VarStructScopes.pop_back();
-  } else if (ParsingTopLevel && VarScopes.size() == 1) {
-    VarScopes.pop_back();
+  } else if (ParsingTopLevel && LocalVariableScopes.size() == 1) {
+    LocalVariableScopes.pop_back();
     VarStructScopes.pop_back();
   }
-}
-
-// Check only the innermost scope (used for redeclaration checks).
-static bool IsDeclaredInCurrentScope(const string &Name) {
-  if (VarScopes.empty())
-    return false;
-  return VarScopes.back().count(Name) > 0;
 }
 
 // Ensure a function scope exists, then add a new scope for the loop variable.
 static void EnterLoopScope(const string &Name, ValueType Type,
                            const string &StructName = "") {
-  if (VarScopes.empty()) {
-    VarScopes.emplace_back();
-    VarStructScopes.emplace_back();
+  if (LocalVariableScopes.empty()) {
+    LocalVariableScopes.push_back({});
+    VarStructScopes.push_back({});
   }
-  VarScopes.emplace_back();
-  VarStructScopes.emplace_back();
-  VarScopes.back()[Name] = Type;
+  LocalVariableScopes.push_back({});
+  VarStructScopes.push_back({});
+  auto &LoopScope = LocalVariableScopes.back();
+  LoopScope[Name] = Type;
+
+  auto &LoopStructScope = VarStructScopes.back();
   if (Type == ValueType::Struct || Type == ValueType::Pointer ||
       Type == ValueType::Array)
-    VarStructScopes.back()[Name] = StructName;
+    LoopStructScope[Name] = StructName;
 }
 
 // Size == 1 is only popped for top-level blocks (function scope is popped in
 // EndFunctionScope).
 static void ExitLoopScope() {
-  if (VarScopes.size() > 1) {
-    VarScopes.pop_back();
+  if (LocalVariableScopes.size() > 1) {
+    LocalVariableScopes.pop_back();
     if (!VarStructScopes.empty())
       VarStructScopes.pop_back();
   }
-  if (ParsingTopLevel && VarScopes.size() == 1) {
-    VarScopes.pop_back();
+  if (ParsingTopLevel && LocalVariableScopes.size() == 1) {
+    LocalVariableScopes.pop_back();
     if (!VarStructScopes.empty())
       VarStructScopes.pop_back();
   }
@@ -1936,11 +1924,36 @@ struct ReturnTypeGuard {
   }
 };
 
-// IsDeclaredVar - Check all local scopes from innermost to outermost, then
+static void DeclareVariable(const string &Name, ValueType Type,
+                       const string &StructName = "") {
+  // Only declare into an active local scope; at top level LocalVariableScopes is empty.
+  if (LocalVariableScopes.empty())
+    return;
+
+  auto &CurrentLocalScope = LocalVariableScopes.back();
+  CurrentLocalScope[Name] = Type;
+
+  auto &CurrentStructScope = VarStructScopes.back();
+  if (Type == ValueType::Struct || Type == ValueType::Pointer ||
+      Type == ValueType::Array)
+    CurrentStructScope[Name] = StructName;
+}
+
+// Check only the innermost scope (used for redeclaration checks).
+static bool IsVariableDeclaredInCurrentScope(const string &Name) {
+  if (LocalVariableScopes.empty())
+    return false;
+
+  const auto &CurrentLocalScope = LocalVariableScopes.back();
+  return CurrentLocalScope.count(Name) > 0;
+}
+
+// IsVariableDeclared - Check all local scopes from innermost to outermost, then
 // fall back to globals. Used to validate assignments and references.
-static bool IsDeclaredVar(const string &Name) {
-  for (auto It = VarScopes.rbegin(); It != VarScopes.rend(); ++It) {
-    if (It->count(Name))
+static bool IsVariableDeclared(const string &Name) {
+  for (auto ScopeIterator = LocalVariableScopes.rbegin();
+       ScopeIterator != LocalVariableScopes.rend(); ++ScopeIterator) {
+    if (ScopeIterator->count(Name))
       return true;
   }
   return GlobalVarTypes.count(Name) > 0;
@@ -1949,9 +1962,10 @@ static bool IsDeclaredVar(const string &Name) {
 // LookupVarType - Return the type from the nearest enclosing local scope,
 // or from globals if not found; otherwise ValueType::Error.
 static ValueType LookupVarType(const string &Name) {
-  for (auto It = VarScopes.rbegin(); It != VarScopes.rend(); ++It) {
-    auto Found = It->find(Name);
-    if (Found != It->end())
+  for (auto ScopeIterator = LocalVariableScopes.rbegin();
+       ScopeIterator != LocalVariableScopes.rend(); ++ScopeIterator) {
+    auto Found = ScopeIterator->find(Name);
+    if (Found != ScopeIterator->end())
       return Found->second;
   }
   auto GI = GlobalVarTypes.find(Name);
@@ -2036,7 +2050,6 @@ static unique_ptr<ExprAST> ParseVarStmt();
 static unique_ptr<ExprAST> ParseStatement();
 static unique_ptr<ExprAST> ParseSimpleStmt();
 static unique_ptr<ExprAST> ParseBlock();
-static unique_ptr<ExprAST> ParseFunctionBody(bool *BodyIsBlock);
 static unique_ptr<ExprAST> BuildAssignmentExpr(int AssignTok,
                                                unique_ptr<ExprAST> LHS,
                                                unique_ptr<ExprAST> RHS);
@@ -3078,7 +3091,7 @@ static unique_ptr<ExprAST> ParseForStmt() {
       return nullptr;
     if (VarType == ValueType::None)
       return LogError("For loop variable cannot have None type");
-    if (IsDeclaredInCurrentScope(VariableName))
+    if (IsVariableDeclaredInCurrentScope(VariableName))
       return LogError(
           ("Variable '" + VariableName + "' already declared in this scope")
               .c_str());
@@ -3278,7 +3291,7 @@ static unique_ptr<ExprAST> ParseVarStmt() {
         return LogError(
             ("Variable '" + Name + "' already declared in this scope").c_str());
     } else {
-      if (IsDeclaredInCurrentScope(Name))
+      if (IsVariableDeclaredInCurrentScope(Name))
         return LogError(
             ("Variable '" + Name + "' already declared in this scope").c_str());
     }
@@ -3318,7 +3331,7 @@ static unique_ptr<ExprAST> ParseVarStmt() {
           DeclType == ValueType::Array)
         GlobalVarStructTypes[Name] = DeclStructName;
     } else {
-      DeclareVar(Name, DeclType, DeclStructName);
+      DeclareVariable(Name, DeclType, DeclStructName);
     }
 
     if (CurTok != ',')
@@ -3854,7 +3867,7 @@ static unique_ptr<ExprAST> ParseContinueStmt() {
 }
 
 static unique_ptr<ExprAST> ParseAssignmentRHS(const string &Name) {
-  if (!IsDeclaredVar(Name))
+  if (!IsVariableDeclared(Name))
     return LogError("Assignment to undeclared variable");
   ValueType VarType = LookupVarType(Name);
   getNextToken(); // eat '='
@@ -3895,7 +3908,7 @@ static int CompoundAssignToBinaryOp(int Tok) {
 
 static unique_ptr<ExprAST> ParseCompoundAssignmentRHS(const string &Name,
                                                       int AssignTok) {
-  if (!IsDeclaredVar(Name))
+  if (!IsVariableDeclared(Name))
     return LogError("Assignment to undeclared variable");
   ValueType DestType = LookupVarType(Name);
   string DestStruct = LookupVarStructName(Name);
@@ -4295,7 +4308,7 @@ static unique_ptr<ExprAST> ParseStatement() {
 }
 
 /// suite
-///   = simplestmt | compoundstmt | eols block ;
+///   = simplestmt | eols block ;
 static unique_ptr<ExprAST> ParseSuite(bool *EndedWithBlock) {
   if (CurTok == tok_eol) {
     consumeNewlines();
@@ -4305,16 +4318,8 @@ static unique_ptr<ExprAST> ParseSuite(bool *EndedWithBlock) {
     return ParseBlock();
   }
 
-  if (CurTok == tok_indent) {
-    *EndedWithBlock = true;
-    return ParseBlock();
-  }
-
-  auto Stmt = ParseStatement();
-  if (!Stmt)
-    return nullptr;
-  *EndedWithBlock = LastStatementWasBlock;
-  return Stmt;
+  *EndedWithBlock = false;
+  return ParseSimpleStmt();
 }
 
 /// block
@@ -4450,23 +4455,8 @@ ParseOptionalReturnTypeWithStruct(string &StructName,
   return ParseTypeToken(&StructName);
 }
 
-/// functionbody
-///   = simplestmt | eols block ;
-static unique_ptr<ExprAST> ParseFunctionBody(bool *BodyIsBlock) {
-  if (CurTok == tok_eol) {
-    consumeNewlines();
-    if (CurTok != tok_indent)
-      return LogError("Expected an indented block");
-    *BodyIsBlock = true;
-    return ParseBlock();
-  }
-
-  *BodyIsBlock = false;
-  return ParseSimpleStmt();
-}
-
 /// definition
-///   = "def" prototype [ "->" type ] ":" ( simplestmt | eols block ) ;
+///   = "def" prototype [ "->" type ] ":" suite ;
 static unique_ptr<FunctionAST> ParseDefinition() {
   getNextToken(); // eat 'def'
   auto Proto = ParsePrototype();
@@ -4488,7 +4478,7 @@ static unique_ptr<FunctionAST> ParseDefinition() {
   getNextToken(); // eat ':'
 
   bool BodyIsBlock = false;
-  unique_ptr<ExprAST> Body = ParseFunctionBody(&BodyIsBlock);
+  unique_ptr<ExprAST> Body = ParseSuite(&BodyIsBlock);
 
   if (Body) {
     LastTopLevelEndedWithBlock = BodyIsBlock;
@@ -4577,7 +4567,7 @@ ParseMethodDefinitionInClass(const string &ClassName, bool IsPublic) {
   getNextToken(); // eat ':'
 
   bool BodyIsBlock = false;
-  unique_ptr<ExprAST> Body = ParseFunctionBody(&BodyIsBlock);
+  unique_ptr<ExprAST> Body = ParseSuite(&BodyIsBlock);
   if (Body) {
     LastTopLevelEndedWithBlock = BodyIsBlock;
     return make_unique<FunctionAST>(std::move(Proto), std::move(Body));
@@ -4896,7 +4886,7 @@ static unique_ptr<FunctionAST> ParseDecoratedDef() {
   getNextToken(); // eat ':'
 
   bool BodyIsBlock = false;
-  unique_ptr<ExprAST> Body = ParseFunctionBody(&BodyIsBlock);
+  unique_ptr<ExprAST> Body = ParseSuite(&BodyIsBlock);
 
   if (Body) {
     LastTopLevelEndedWithBlock = BodyIsBlock;
@@ -8013,7 +8003,7 @@ static void ResetParserStateForFile() {
   GlobalVarTypes.clear();
   GlobalVarStructTypes.clear();
   GlobalVarDecls.clear();
-  VarScopes.clear();
+  LocalVariableScopes.clear();
   VarStructScopes.clear();
   FileTopLevelStmts.clear();
   LastTopLevelEndedWithBlock = false;

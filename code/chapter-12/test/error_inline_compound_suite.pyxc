@@ -1,0 +1,4 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Unexpected 'if'
+
+def f(): if 1: return 1

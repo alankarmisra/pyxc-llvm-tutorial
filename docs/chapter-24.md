@@ -665,23 +665,27 @@ if (isdigit(LexerLastChar) ||
 
 ## Tracking Struct Names in Scope
 
-Field access parsing needs to know a variable's struct name, not just that it's `ValueType::Struct`: I keep running into this. Chapter 18 already tracks variable *types* with `VarScopes: vector<map<string, ValueType>>`, a stack of maps for nested scopes. I need the same shape of thing, but for struct names, so I add a parallel stack rather than changing what `VarScopes` stores:
+Field access parsing needs to know a variable's struct name, not just that it's `ValueType::Struct`: I keep running into this. Chapter 18 already tracks variable *types* with `LocalVariableScopes: vector<map<string, ValueType>>`, a stack of maps for nested scopes. I need the same shape of thing, but for struct names, so I add a parallel stack rather than changing what `LocalVariableScopes` stores:
 
 ```cpp
 static vector<std::map<string, string>> VarStructScopes;
 ```
 
-I kept it separate instead of, say, changing `VarScopes` to hold a `(ValueType, string)` pair, because most variables aren't structs and I don't want every scope lookup paying for a string that's usually empty. Every place that pushes or pops a scope for `VarScopes` now does the same for `VarStructScopes` right alongside it: `BeginFunctionScope`, `BeginBlockScope`, `BeginLoopScope`, and their `End*` counterparts. And `DeclareVar` records into both when the variable being declared has a struct name:
+I kept it separate instead of, say, changing `LocalVariableScopes` to hold a `(ValueType, string)` pair, because most variables aren't structs and I don't want every scope lookup paying for a string that's usually empty. Every place that pushes or pops a scope for `LocalVariableScopes` now does the same for `VarStructScopes` right alongside it: `BeginFunctionScope`, `BeginBlockScope`, `BeginLoopScope`, and their `End*` counterparts. And `DeclareVariable` records into both when the variable being declared has a struct name:
 
 ```cpp
-static void DeclareVar(const string &Name, ValueType Type,
+static void DeclareVariable(const string &Name, ValueType Type,
                        const string &StructName = "") {
-  // Only declare into an active local scope; at top level VarScopes is empty.
-  if (VarScopes.empty())
+  // Only declare into an active local scope; at top level LocalVariableScopes is empty.
+  if (LocalVariableScopes.empty())
     return;
-  VarScopes.back()[Name] = Type;
+
+  auto &CurrentLocalScope = LocalVariableScopes.back();
+  CurrentLocalScope[Name] = Type;
+
+  auto &CurrentStructScope = VarStructScopes.back();
   if (!StructName.empty())
-    VarStructScopes.back()[Name] = StructName;
+    CurrentStructScope[Name] = StructName;
 }
 ```
 

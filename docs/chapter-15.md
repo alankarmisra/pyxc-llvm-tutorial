@@ -83,10 +83,10 @@ In chapter 12, `var` was a statement, but its scope was always a function body �
 
 ## Parse-Time Tracking
 
-Chapter 12 tracked declared variables in `VarScopes` — a stack of sets, one per active scope. I add a parallel set for globals, and a flag for whether I'm currently parsing top-level input:
+Chapter 12 tracked declared variables in `LocalVariableScopes` — a stack of sets, one per active scope. I add a parallel set for globals, and a flag for whether I'm currently parsing top-level input:
 
 ```cpp
-static vector<set<string>> VarScopes;    // locals and block scopes
+static vector<set<string>> LocalVariableScopes;    // locals and block scopes
 static set<string> GlobalVarNames;       // top-level globals (persist forever)
 static bool ParsingTopLevel = false;     // true while parsing a top-level statement
 ```
@@ -116,7 +116,7 @@ struct TopLevelParseGuard {
 *    string ParsedName = Name;
 *    getNextToken(); // eat name
 *
--    if (IsDeclaredInCurrentScope(ParsedName))
+-    if (IsVariableDeclaredInCurrentScope(ParsedName))
 -      return LogErrorExpression(
 -          ("Variable '" + ParsedName + "' already declared in this scope").c_str());
 +    if (IsGlobalDeclaration) {
@@ -124,7 +124,7 @@ struct TopLevelParseGuard {
 +        return LogErrorExpression(
 +            ("Variable '" + ParsedName + "' already declared in this scope")
 +                .c_str());
-+    } else if (IsDeclaredInCurrentScope(ParsedName)) {
++    } else if (IsVariableDeclaredInCurrentScope(ParsedName)) {
 +      return LogErrorExpression(
 +          ("Variable '" + ParsedName + "' already declared in this scope")
 +              .c_str());
@@ -141,11 +141,11 @@ struct TopLevelParseGuard {
 *    }
 *
 *    VariableBindings.push_back({ParsedName, std::move(Init)});
--    DeclareVar(ParsedName);
+-    DeclareVariable(ParsedName);
 +    if (IsGlobalDeclaration)
 +      GlobalVarNames.insert(ParsedName);
 +    else
-+      DeclareVar(ParsedName);
++      DeclareVariable(ParsedName);
 *
 *    if (CurrentToken != tok_comma)
 *      break;
@@ -156,25 +156,27 @@ struct TopLevelParseGuard {
 *}
 ```
 
-`IsDeclaredVar` checks both sets now — inside a function body, a name resolves as declared if it was declared locally or globally:
+`IsVariableDeclared` checks both sets now — inside a function body, a name resolves as declared if it was declared locally or globally:
 
 ```cpp
-static bool IsDeclaredVar(const string &Name) {
-  for (auto It = VarScopes.rbegin(); It != VarScopes.rend(); ++It)
-    if (It->count(Name))
+static bool IsVariableDeclared(const string &Name) {
+  for (auto ScopeIterator = LocalVariableScopes.rbegin();
+       ScopeIterator != LocalVariableScopes.rend(); ++ScopeIterator) {
+    if (ScopeIterator->count(Name))
       return true;
+  }
   return GlobalVarNames.count(Name) > 0;
 }
 ```
 
-There's one more wrinkle `ParsingTopLevel` fixes: a top-level `if` or `for` still opens a block or loop scope via `BeginBlockScope`/`BeginLoopScope`, same as inside a function — but at the top level there's no enclosing `FunctionScopeGuard` to eventually clear `VarScopes` when everything's done. `EndBlockScope` and `EndLoopScope` both special-case that: once the last scope on the stack belongs to a top-level block or loop rather than a function, they pop it too, instead of leaving it stranded:
+There's one more wrinkle `ParsingTopLevel` fixes: a top-level `if` or `for` still opens a block or loop scope via `BeginBlockScope`/`BeginLoopScope`, same as inside a function — but at the top level there's no enclosing `FunctionScopeGuard` to eventually clear `LocalVariableScopes` when everything's done. `EndBlockScope` and `EndLoopScope` both special-case that: once the last scope on the stack belongs to a top-level block or loop rather than a function, they pop it too, instead of leaving it stranded:
 
 ```cpp
 static void EndBlockScope() {
-  if (VarScopes.size() > 1)
-    VarScopes.pop_back();
-  else if (ParsingTopLevel && VarScopes.size() == 1)
-    VarScopes.pop_back();
+  if (LocalVariableScopes.size() > 1)
+    LocalVariableScopes.pop_back();
+  else if (ParsingTopLevel && LocalVariableScopes.size() == 1)
+    LocalVariableScopes.pop_back();
 }
 ```
 

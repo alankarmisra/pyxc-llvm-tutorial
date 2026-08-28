@@ -638,23 +638,24 @@ Chapter 17 tracked which variable names were in scope using a `set<string>`:
 
 ```cpp
 // Chapter 17
-static vector<set<string>> VarScopes;
+static vector<set<string>> LocalVariableScopes;
 ```
 
 Chapter 18 upgrades to `map<string, ValueType>` so the type of each variable is also tracked:
 
 ```cpp
 // Chapter 18
-static vector<std::map<string, ValueType>> VarScopes;
+static vector<std::map<string, ValueType>> LocalVariableScopes;
 ```
 
 `LookupVarType` searches the scope stack innermost-first, then falls back to `GlobalVarTypes`:
 
 ```cpp
 static ValueType LookupVarType(const string &Name) {
-  for (auto It = VarScopes.rbegin(); It != VarScopes.rend(); ++It) {
-    auto Found = It->find(Name);
-    if (Found != It->end())
+  for (auto ScopeIterator = LocalVariableScopes.rbegin();
+       ScopeIterator != LocalVariableScopes.rend(); ++ScopeIterator) {
+    auto Found = ScopeIterator->find(Name);
+    if (Found != ScopeIterator->end())
       return Found->second;
   }
   auto GI = GlobalVarTypes.find(Name);

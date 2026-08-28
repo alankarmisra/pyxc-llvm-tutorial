@@ -31,7 +31,7 @@ visibility      = "public" | "private" ;
 method-definition       = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")"
                   [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
 field-declaration       = name ":" type ;
-function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+function-definition      = "def" function-signature [ "->" type ] ":" suite ;
 (* If the return type is omitted, it defaults to None. *)
 external        = "extern" "def" external-function-signature [ "->" type ] ;
 top-level-expression    = expression ;
@@ -56,7 +56,7 @@ assignment-statement      = lvalue assignment-operator expression ; (* assignmen
 simple-statement      = return-statement | break-statement | continue-statement | variable-statement | assignment-statement | expression ;
 compound-statement    = if-statement | for-statement | while-statement | do-while-statement | switch-statement ;
 statement       = simple-statement | compound-statement ;
-suite           = simple-statement | compound-statement | end-of-lines block ;
+suite           = simple-statement | end-of-lines block ;
 return-statement      = "return" [ expression ] ;
 break-statement       = "break" ;
 continue-statement    = "continue" ;

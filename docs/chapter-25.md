@@ -208,7 +208,7 @@ case tok_ptr: {
 }
 ```
 
-The parsed pointee type is immediately encoded and written into the `StructName` output parameter. From this point on, the pointer's pointee information travels with it as an opaque string through `VarScopes`, `FunctionSignatureNode::ParameterInfo`, `NameExpressionNode`, and every other place that stores a `ValueType` alongside a `StructName`.
+The parsed pointee type is immediately encoded and written into the `StructName` output parameter. From this point on, the pointer's pointee information travels with it as an opaque string through `LocalVariableScopes`, `FunctionSignatureNode::ParameterInfo`, `NameExpressionNode`, and every other place that stores a `ValueType` alongside a `StructName`.
 
 ## `addr`: Taking the Address of an Lvalue
 

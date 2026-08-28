@@ -256,7 +256,7 @@ static void ResetLexerState() {
 static void ResetParserStateForFile() {
   FunctionSignatures.clear();
   GlobalVarNames.clear();
-  VarScopes.clear();
+  LocalVariableScopes.clear();
   FileTopLevelStatements.clear();
   LastTopLevelShouldPrint = true;
   ParsingTopLevel = false;
