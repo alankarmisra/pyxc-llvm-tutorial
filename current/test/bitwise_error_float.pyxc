@@ -1,9 +1,0 @@
-# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
-# CHECK: {{[Ee]rror}}
-# CHECK: Type mismatch in binary operator
-
-def main() -> int:
-  var x: float64 = 1.0
-  var y: float64 = 2.0
-  var z: float64 = x & y
-  return 0

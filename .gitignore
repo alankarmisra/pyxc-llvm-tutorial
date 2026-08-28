@@ -84,3 +84,10 @@ old_chapters/
 .cache/
 
 code/practice
+
+# Local working notes and generated snapshot
+/CLAUDE.md
+/KNOWN_ISSUES.md
+/NOTES.md
+/REF.md
+/current/

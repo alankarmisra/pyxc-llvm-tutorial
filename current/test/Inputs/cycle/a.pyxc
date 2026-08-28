@@ -1,5 +1,0 @@
-module cycle.a
-import cycle.b
-
-export def fa() -> int:
-  return fb() + 1

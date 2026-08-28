@@ -5,7 +5,7 @@ description: "Add Python-style elif chains so multi-way conditionals don't nest 
 
 ## What I Am Building
 
-[Chapter 12](chapter-12.md) added `if`/`else` as a statement, but nothing between them. For more than two branches, I'm forced to nest:
+[Chapter 12](chapter-12.md) gave pyxc `if` and `else`, and nothing else — which is fine right up until a function needs to choose between three things instead of two, at which point I'm reduced to stacking `else`/`if` pairs like Russian nesting dolls, each one a little further from the left margin than the last:
 
 ```pyxc
 def sign(x):

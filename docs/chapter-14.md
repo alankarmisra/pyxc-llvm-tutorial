@@ -5,7 +5,7 @@ description: "Complete pyxc's loop story: while, do/while, break, and continue, 
 
 ## What I Am Building
 
-pyxc has had `for` loops since [Chapter 10](chapter-10.md), but that's the only loop form, and there's no way to leave one early. After this chapter, `while` and `do`/`while` join the language, and `break`/`continue` work correctly, including inside nested loops:
+pyxc has had `for` loops since [Chapter 10](chapter-10.md), and exactly one way to use them: start, stop, and no changing your mind partway through. There's no `while` for when I don't know the count in advance, no `do`/`while` for when the body needs to run at least once regardless, and no way to bail out of a loop early short of lying to it about when to stop. This chapter fixes all three: `while` and `do`/`while` join the language, and `break`/`continue` now work correctly, even nested.
 
 <!-- code-merge:start -->
 ```pyxc

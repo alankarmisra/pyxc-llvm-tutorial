@@ -1,6 +1,0 @@
-# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
-# CHECK: Character literal out of range for type
-
-def main() -> int:
-  var c: int8 = '\x80'
-  return int(c)

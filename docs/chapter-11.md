@@ -5,9 +5,11 @@ description: "Add mutable local variables and assignment using a temporary var .
 
 ## What I Am Building
 
-Until now, names in pyxc haven't really been variables. I could give something a
-name and use it later, but I couldn't change it. This chapter adds the missing
-pieces: `var` declares mutable storage, and `=` writes a new value into it.
+Every name in pyxc has, up to now, led a remarkably passive existence: I could
+hand it a value, use it, and that was the entire relationship — no arguments,
+no changes of heart, no second acts. This chapter gives names the one thing
+they've never had: an opinion of their own that can change. `var` declares a
+variable that's actually allowed to vary; `=` is how I tell it to.
 
 The `for` syntax changes along with it. Its last field used to be a number that
 the loop added automatically. Now it's the whole update expression:

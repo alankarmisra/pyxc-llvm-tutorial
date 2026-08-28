@@ -6,7 +6,7 @@ description: "Add comparison operators, if/else expressions, and for loops — t
 
 ## What I Am Building
 
-[Chapter 9](chapter-09.md) added file input. The language still only supports arithmetic and function calls. I now add comparisons, conditional branches, and loops.
+So far, I've built something extremely good at arithmetic and extremely bad at opinions: it can add two numbers together with total confidence but has no way to decide anything, compare anything, or do the same thing twice. [Chapter 9](chapter-09.md) taught it to read from a file; now I teach it comparisons, conditional branches, and loops — the point where a calculator starts turning into a language.
 
 I continue to represent every pyxc value as a `double`, so I make comparisons produce `1.0` for true and `0.0` for false. A comparison can then appear anywhere that another expression can appear.
 

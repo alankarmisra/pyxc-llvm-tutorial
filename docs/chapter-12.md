@@ -5,7 +5,7 @@ description: "Switch from expression-only bodies to statement blocks with indent
 
 ## What I Am Building
 
-I've finally come to the part where I can make functions expand beyond single-line monstrosities. This is how I want to write code. Like a regular person. Thoughts spread over multiple lines.
+For eleven chapters, every pyxc function has had to fit its entire personality into a single line, like a novel written entirely in tweets. `var x = n: x = x + 1` is the sort of thing you write once, wince at, and never write again voluntarily. This chapter finally lets me write code the way an actual person thinks: one idea per line, indented under the last one, instead of everything crammed behind a colon like an afterthought.
 
 <!-- code-merge:start -->
 ```pyxc

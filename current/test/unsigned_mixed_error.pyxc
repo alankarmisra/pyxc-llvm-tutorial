@@ -1,9 +1,0 @@
-# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
-# CHECK: Error
-# CHECK: Type mismatch
-
-def main() -> int:
-  var a: uint32 = 1
-  var b: int32 = 2
-  a = a + b
-  return 0

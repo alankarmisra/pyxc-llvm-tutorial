@@ -1,3 +1,0 @@
-# RUN: python3 -c "open(r'%t.pyxc', 'wb').write(b\"def main() -> int:\\n  var c: int32 = '\\x80'\\n  return c\\n\")"
-# RUN: not %pyxc --emit llvm-ir -o %t.ll %t.pyxc 2>&1 | FileCheck %s
-# CHECK: invalid UTF-8 in character literal
