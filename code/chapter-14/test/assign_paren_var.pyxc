@@ -1,0 +1,13 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Evaluated to 2.000000
+
+# Tests: assignment to a parenthesized variable is accepted. Parentheses are
+# just grouping, so "(x) = 2" parses to the same NameExpressionNode as
+# "x = 2" and getLValueName() succeeds either way.
+
+def f():
+    var x = 1
+    (x) = 2
+    return x
+
+f()

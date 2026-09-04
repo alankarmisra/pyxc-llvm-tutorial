@@ -100,8 +100,10 @@ CurrentModuleName.clear();
 ```cpp
 static bool ParseModulePath(string &Path) {
   Path.clear();
-  if (CurrentToken != tok_name)
-    return LogErrorExpression("Expected module path"), false;
+  if (CurrentToken != tok_name) {
+    LogErrorExpression("Expected module path");
+    return false;
+  }
   Path = Name;
   getNextToken(); // eat first name
   while (CurrentToken == tok_dot) {

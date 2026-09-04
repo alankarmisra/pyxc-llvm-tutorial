@@ -2949,38 +2949,52 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
 static bool ParseForParts(ValueType VarType, unique_ptr<ExpressionNode> &Start,
                           unique_ptr<ExpressionNode> &Condition, unique_ptr<ExpressionNode> &Update,
                           unique_ptr<ExpressionNode> &Body) {
-  if (CurrentToken != tok_assign)
-    return LogErrorExpression("Expected '=' after 'for' variable"), false;
+  if (CurrentToken != tok_assign) {
+    LogErrorExpression("Expected '=' after 'for' variable");
+    return false;
+  }
   getNextToken(); // eat '='
 
   Start = ParseExpression();
   if (!Start)
     return false;
-  if (!IsAssignable(VarType, Start->getType()))
-    return LogErrorExpression("For loop start must match loop variable type"), false;
-  if (!IsNumericType(VarType))
-    return LogErrorExpression("For loop variable must be numeric"), false;
+  if (!IsAssignable(VarType, Start->getType())) {
+    LogErrorExpression("For loop start must match loop variable type");
+    return false;
+  }
+  if (!IsNumericType(VarType)) {
+    LogErrorExpression("For loop variable must be numeric");
+    return false;
+  }
 
-  if (CurrentToken != tok_comma)
-    return LogErrorExpression("Expected ',' after 'for' start value"), false;
+  if (CurrentToken != tok_comma) {
+    LogErrorExpression("Expected ',' after 'for' start value");
+    return false;
+  }
   getNextToken(); // eat ','
 
   Condition = ParseExpression();
   if (!Condition)
     return false;
-  if (Condition->getType() != ValueType::Bool)
-    return LogErrorExpression("For loop condition must be bool"), false;
+  if (Condition->getType() != ValueType::Bool) {
+    LogErrorExpression("For loop condition must be bool");
+    return false;
+  }
 
-  if (CurrentToken != tok_comma)
-    return LogErrorExpression("Expected ',' after 'for' condition"), false;
+  if (CurrentToken != tok_comma) {
+    LogErrorExpression("Expected ',' after 'for' condition");
+    return false;
+  }
   getNextToken(); // eat ','
 
   Update = ParseExpression();
   if (!Update)
     return false;
 
-  if (CurrentToken != tok_colon)
-    return LogErrorExpression("Expected ':' after 'for' step"), false;
+  if (CurrentToken != tok_colon) {
+    LogErrorExpression("Expected ':' after 'for' step");
+    return false;
+  }
   getNextToken(); // eat ':'
 
   // Parse the suite after ':' (inline statement or indented block).
@@ -4241,8 +4255,10 @@ ParseOptionalReturnType(string *StructName,
 ///   = "trait" name ":" end-of-lines trait-block ;
 static bool ParseTraitDefinition() {
   getNextToken(); // eat 'trait'
-  if (CurrentToken != tok_name)
-    return LogErrorExpression("Expected trait name"), false;
+  if (CurrentToken != tok_name) {
+    LogErrorExpression("Expected trait name");
+    return false;
+  }
   string TraitName = Name;
   if (TraitTypes.count(TraitName) || StructTypes.count(TraitName) ||
       TypeAliases.count(TraitName))
@@ -4250,14 +4266,20 @@ static bool ParseTraitDefinition() {
                ("Type '" + TraitName + "' is already defined").c_str()),
            false;
   getNextToken(); // eat trait name
-  if (CurrentToken != tok_colon)
-    return LogErrorExpression("Expected ':' after trait name"), false;
+  if (CurrentToken != tok_colon) {
+    LogErrorExpression("Expected ':' after trait name");
+    return false;
+  }
   getNextToken(); // eat ':'
-  if (CurrentToken != tok_eol)
-    return LogErrorExpression("Expected newline after trait header"), false;
+  if (CurrentToken != tok_eol) {
+    LogErrorExpression("Expected newline after trait header");
+    return false;
+  }
   consumeNewlines();
-  if (CurrentToken != tok_indent)
-    return LogErrorExpression("Expected an indented trait body"), false;
+  if (CurrentToken != tok_indent) {
+    LogErrorExpression("Expected an indented trait body");
+    return false;
+  }
   getNextToken(); // eat INDENT
 
   TraitTypeInfo Trait;
@@ -4271,12 +4293,16 @@ static bool ParseTraitDefinition() {
       return LogErrorExpression("Expected method signature in trait body"),
              false;
     getNextToken(); // eat 'def'
-    if (CurrentToken != tok_name)
-      return LogErrorExpression("Expected trait method name"), false;
+    if (CurrentToken != tok_name) {
+      LogErrorExpression("Expected trait method name");
+      return false;
+    }
     TraitMethodSignature Method;
     Method.Name = Name;
-    if (!MethodNames.insert(Method.Name).second)
-      return LogErrorExpression("Duplicate trait method"), false;
+    if (!MethodNames.insert(Method.Name).second) {
+      LogErrorExpression("Duplicate trait method");
+      return false;
+    }
     getNextToken(); // eat method name
     if (CurrentToken != tok_lparen)
       return LogErrorExpression("Expected '(' in trait method signature"),
@@ -4318,17 +4344,23 @@ static bool ParseTraitDefinition() {
         ParseOptionalReturnType(&Method.ReturnTypeInfo, ValueType::None);
     if (Method.ReturnType == ValueType::Error)
       return false;
-    if (CurrentToken == tok_colon)
-      return LogErrorExpression("Trait methods cannot have a body"), false;
+    if (CurrentToken == tok_colon) {
+      LogErrorExpression("Trait methods cannot have a body");
+      return false;
+    }
     Trait.Methods.push_back(std::move(Method));
     if (CurrentToken == tok_eol)
       consumeNewlines();
   }
 
-  if (Trait.Methods.empty())
-    return LogErrorExpression("Trait requires at least one method"), false;
-  if (CurrentToken != tok_dedent)
-    return LogErrorExpression("Expected dedent after trait body"), false;
+  if (Trait.Methods.empty()) {
+    LogErrorExpression("Trait requires at least one method");
+    return false;
+  }
+  if (CurrentToken != tok_dedent) {
+    LogErrorExpression("Expected dedent after trait body");
+    return false;
+  }
   TraitTypes[TraitName] = std::move(Trait);
   PendingTokens.push_front(tok_block_end);
   getNextToken(); // eat DEDENT, then surface block-end

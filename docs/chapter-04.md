@@ -1,263 +1,244 @@
 ---
-description: "Add unary minus and the remainder operator, closing the gap left by Chapter 3, by giving multiplication and division a new operand tier."
+section: "Foundations"
+description: "Complete basic arithmetic with unary negation and remainder."
 ---
+
 # 4. pyxc: Completing Basic Arithmetic
 
-## What I Am Building
+Next: make these expressions parse:
 
-My compiler will happily compute `x - 5`, but ask it for `-5` on its own and it simply refuses, as if subtraction is respectable but a number showing up alone and negative is somehow suspicious. It has also never heard of a remainder. I fix both today.
-
-In Chapter 3, `-` only ever showed up as subtraction. A leading `-` doesn't parse at all:
-
-<!-- code-merge:start -->
 ```pyxc
-ready> -5
+-5
+x * -2
+17 % 5
 ```
-```text
-Error: Unexpected '-' (token: '-')
-```
-<!-- code-merge:end -->
 
-`%` doesn't exist either — there's no way to ask for a remainder. I close both gaps in this chapter.
+Chapter 3 recognizes binary `-`, but a leading `-` appears where the parser expects an operand. Add a new grammar layer for prefix operators, then add remainder beside multiplication and division.
 
-## Source Code
+Work in:
 
 ```bash
-git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-04
+cd code/chapter-04
 ```
 
-## Grammar
+## 1. Replace the Term Grammar
 
-I insert `factor` between `term` and `primary`. `term` now loops over `factor` instead of `primary` directly, and `factor` is where `-` and `%` both live:
+Replace:
 
-`code/chapter-04/pyxc.ebnf`
-
-```grammardiff
-*...
-*comparison                        = sum { "<" sum } ;
-*sum                               = term { ("+" | "-") term } ;
--term                              = primary { ("*" | "/") primary } ;
-+term                              = factor { ("*" | "/" | "%") factor } ;
-+factor                            = "-" factor
-+                                    | primary ;
-*primary                           = name-expression
-*                                    | number-expression
-*...
+```ebnf
+term = primary { ("*" | "/") primary } ;
 ```
 
-I could have special-cased `-` inside `ParsePrimary` instead of giving it its own tier, but then `--5` and `-(x + 1)` wouldn't fall out naturally — I'd have to handle chaining by hand at the call site. Giving `factor` its own self-recursive rule means `-` in front of *anything* that can start a `factor`, including another `-`, just works. `%` doesn't need any of that; it's a plain sibling of `*` and `/` at the same tier.
+with:
 
-## A New Token
-
-I add one token for `%`:
-
-```cppdiff
-*enum Token {
-*  ...
-*  tok_star,
-*  tok_slash,
-+  tok_percent,
-*  tok_less,
-*};
+```ebnf
+term   = factor { ("*" | "/" | "%") factor } ;
+factor = "-" factor | primary ;
 ```
 
-And give it a readable name for error messages, right alongside `%`'s siblings:
+This puts unary minus between `primary` and multiplication:
 
-```cppdiff
-*static map<int, string> TokenNames = {
-*    ...
--    {tok_star, "'*'"},         {tok_slash, "'/'"},   {tok_less, "'<'"},
-+    {tok_star, "'*'"},         {tok_slash, "'/'"},   {tok_percent, "'%'"},
-+    {tok_less, "'<'"},
-*};
+```text
+primary -> factor -> term -> sum
 ```
 
-And return it from the lexer:
+Calling `factor` recursively allows repeated negation:
 
-```cppdiff
-*  switch (ThisChar) {
-*  ...
-*  case '/':
-*    return tok_slash;
-+  case '%':
-+    return tok_percent;
-*  case '<':
-*    return tok_less;
-*  default:
-*    return tok_error;
-*  }
+```pyxc
+---x
 ```
 
-## A New AST Node
+## 2. Add the Remainder Token
 
-Unary minus needs a node shaped differently from `BinaryExpressionNode` — one operand, not two:
+Add:
 
 ```cpp
-/// UnaryExpressionNode - Expression class for applying a unary operator.
+tok_percent,
+```
+
+Add its readable token name:
+
+```cpp
+{tok_percent, "'%'"},
+```
+
+Then recognize the character in `getToken()`:
+
+```cpp
+case '%':
+  return tok_percent;
+```
+
+No new token is needed for unary minus. The lexer already returns `tok_minus`; the parser decides whether its position is unary or binary.
+
+## 3. Add a Unary AST Node
+
+Add:
+
+```cpp
 class UnaryExpressionNode : public ExpressionNode {
   int Operator;
   unique_ptr<ExpressionNode> Operand;
 
 public:
-  UnaryExpressionNode(int Operator, unique_ptr<ExpressionNode> Operand)
+  UnaryExpressionNode(int Operator,
+                      unique_ptr<ExpressionNode> Operand)
       : Operator(Operator), Operand(std::move(Operand)) {}
 };
 ```
 
-I store `Operator` as an `int`, the same type `CurrentToken` already is, even though `-` is the only unary operator I have right now. That leaves room to add `!` or `~` later without changing the node's shape.
+A binary node owns two operands. A unary node owns one.
 
-## Parsing `factor`
+For:
 
-`ParseTerm` calls `ParseFactor` for each operand instead of `ParsePrimary`:
+```pyxc
+-x
+```
 
-`ParseFactor` needs a forward declaration above `ParseUnaryMinus` because the two functions call each other: `ParseUnaryMinus` needs `ParseFactor` to parse its operand, and `ParseFactor` needs `ParseUnaryMinus` to handle the `-` case. Whichever one I define first has to declare the other ahead of its own body.
+the tree is:
+
+```text
+UnaryExpression '-'
+└── NameExpression x
+```
+
+## 4. Parse Unary Minus
+
+Forward-declare `ParseFactor()` because unary parsing calls back into it:
 
 ```cpp
 static unique_ptr<ExpressionNode> ParseFactor();
+```
 
-/// I parse the unary-minus branch of factor.
+Then add:
+
+```cpp
 static unique_ptr<ExpressionNode> ParseUnaryMinus() {
-  getNextToken(); // I eat '-'.
+  getNextToken(); // eat '-'
+
   auto Operand = ParseFactor();
   if (!Operand)
     return nullptr;
-  return make_unique<UnaryExpressionNode>(tok_minus, std::move(Operand));
-}
 
-/// factor
-///   = "-" factor
-///   | primary ;
+  return make_unique<UnaryExpressionNode>(
+      tok_minus, std::move(Operand));
+}
+```
+
+Implement the grammar choice:
+
+```cpp
 static unique_ptr<ExpressionNode> ParseFactor() {
   if (CurrentToken == tok_minus)
     return ParseUnaryMinus();
+
   return ParsePrimary();
 }
 ```
 
-`ParseUnaryMinus` calls `ParseFactor` for its own operand, not `ParsePrimary` — that's what lets it recurse into itself. `--5` works because the first `-` calls `ParseFactor`, which sees the second `-` and calls `ParseUnaryMinus` again before either call has produced a value.
+The recursive `ParseFactor()` call makes `--x` become `-(-x)`. Calling `ParsePrimary()` after the recursion stops gives unary minus tighter precedence than `*`, `/`, `+`, and `-`.
 
-```cppdiff
-*/// term
--///   = primary { ("*" | "/") primary } ;
-+///   = factor { ("*" | "/" | "%") factor } ;
-*static unique_ptr<ExpressionNode> ParseTerm() {
--  // I start the term by parsing one primary.
--  auto Left = ParsePrimary();
-+  // I start the term by parsing one factor.
-+  auto Left = ParseFactor();
-*  if (!Left)
-*    return nullptr;
-*
-*  // I consume only the operators that belong to this tier.
--  while (CurrentToken == tok_star || CurrentToken == tok_slash) {
-+  while (CurrentToken == tok_star || CurrentToken == tok_slash ||
-+         CurrentToken == tok_percent) {
-*    int Operator = CurrentToken;
--    getNextToken(); // I eat '*' or '/'.
--    auto Right = ParsePrimary();
-+    getNextToken(); // I eat '*', '/', or '%'.
-+    auto Right = ParseFactor();
-*    if (!Right)
-*      return nullptr;
-*
-*    // I fold each new operation into the tree on my left.
-*    Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
-*                                             std::move(Right));
-*  }
-*
-*  return Left;
-*}
+## 5. Make Terms Consume Factors
+
+In `ParseTerm()`, replace both calls to `ParsePrimary()` with `ParseFactor()`.
+
+Then extend the operator condition:
+
+```cpp
+while (CurrentToken == tok_star || CurrentToken == tok_slash ||
+       CurrentToken == tok_percent) {
 ```
 
-That single change — `ParsePrimary()` to `ParseFactor()`, twice, in `ParseTerm` — is what makes `-2 * 3` parse as `(-2) * 3` rather than `-(2 * 3)`. `ParseFactor` grabs the `-2` as a complete unit before `ParseTerm`'s `while` loop ever sees the `*`. `%` needed no equivalent change anywhere else — it just joins `*` and `/` in the same `while` condition, since it belongs at exactly their precedence.
+The complete shape is:
 
-There's no new error path for a bad operand after `-`: `ParseUnaryMinus` just propagates the `Unexpected ...` diagnostic produced by `ParsePrimary()`:
+```cpp
+static unique_ptr<ExpressionNode> ParseTerm() {
+  auto Left = ParseFactor();
+  if (!Left)
+    return nullptr;
 
-<!-- code-merge:start -->
-```pyxc
-ready> -)
+  while (CurrentToken == tok_star || CurrentToken == tok_slash ||
+         CurrentToken == tok_percent) {
+    int Operator = CurrentToken;
+    getNextToken();
+
+    auto Right = ParseFactor();
+    if (!Right)
+      return nullptr;
+
+    Left = make_unique<BinaryExpressionNode>(
+        Operator, std::move(Left), std::move(Right));
+  }
+
+  return Left;
+}
 ```
+
+## 6. Check the Resulting Grouping
+
+These expressions now group as:
+
 ```text
-Error: Unexpected ')' (token: ')')
+-2 * 3      -> (-2) * 3
+x * -2      -> x * (-2)
+-x % 4 + 1  -> ((-x) % 4) + 1
+--x          -> -(-x)
 ```
-<!-- code-merge:end -->
 
-## Try It
+Unary minus binds tighter because `ParseTerm()` asks `ParseFactor()` for each operand. Remainder shares the term tier with multiplication and division.
 
-<!-- code-merge:start -->
-```pyxc
-ready> def wrap(x):
--x % 10
-```
-```text
-Parsed a function definition.
-```
-<!-- code-merge:end -->
-<!-- code-merge:start -->
-```pyxc
-ready> -5
-```
-```text
-Parsed a top-level expression.
-```
-<!-- code-merge:end -->
-<!-- code-merge:start -->
-```pyxc
-ready> 7 % 3
-```
-```text
-Parsed a top-level expression.
-```
-<!-- code-merge:end -->
-<!-- code-merge:start -->
-```pyxc
-ready> -2 * 3
-```
-```text
-Parsed a top-level expression.
-```
-<!-- code-merge:end -->
-<!-- code-merge:start -->
-```pyxc
-ready> --5
-```
-```text
-Parsed a top-level expression.
-```
-<!-- code-merge:end -->
-
-`-2 * 3` is `(-2) * 3`, not `-(2 * 3)` written differently — unary minus binds tighter than `*`, same as it does in every C-family language. `--5` is double negation, not decrement — pyxc has no `--` token yet, so this is just `-` applied twice, and `ParseFactor` handles both `-` characters through the same recursive call. There's still no codegen at this stage, so every valid line just reports that it parsed; I don't see real arithmetic results until I connect the AST to LLVM IR.
-
-## Build and Run
+## 7. Build and Run
 
 ```bash
-cd code/chapter-04
-cmake -S . -B build && cmake --build build
+cmake -S . -B build
+cmake --build build
 ./build/pyxc
 ```
 
-I run the chapter tests with:
+Try:
+
+```pyxc
+ready> -5
+ready> 17 % 5
+ready> x * -2
+ready> --3
+```
+
+Expected after each valid input:
+
+```text
+Parsed a top-level expression.
+```
+
+The frontend still does not evaluate. These experiments verify that the new token positions produce the intended AST rather than an unexpected-token error.
+
+Run all tests:
 
 ```bash
 llvm-lit -v test/
 ```
 
-## What's Next
+What you built is one reusable prefix boundary:
 
-[Chapter 5](chapter-05.md) adds real source locations and caret-style error messages.
+```text
+leading '-' -> unary node over another factor
+infix '-'   -> binary node in the sum tier
+```
+
+Next: [Chapter 5](chapter-05.md) turns crude parser failures into source-located diagnostics with carets and recovery.
 
 ## Need Help?
 
 Build issues? Questions?
 
-- **GitHub Issues:** [Report problems](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues)
-- **Discussions:** [Ask questions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions)
+- [Report a problem with GitHub Issues](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues)
+- [Ask a question in GitHub Discussions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions)
 
 Include:
 
-- Your OS and version
-- Full error message
-- Output of `cmake --version`
-
-I'll help you figure it out.
+- Your operating system and version
+- The chapter number
+- The exact command you ran
+- The complete error message
+- The output of `c++ --version` and `cmake --version`
+- The output of `llvm-config --version` for Chapter 6 and later

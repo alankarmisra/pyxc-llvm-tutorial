@@ -136,8 +136,10 @@ This is why `T` in `def add(x: T, y: T) -> T` resolves to `(ValueType::TypeVaria
 ```cpp
 static bool ParseTraitDefinition() {
   getNextToken(); // eat 'trait'
-  if (CurrentToken != tok_name)
-    return LogErrorExpression("Expected trait name"), false;
+  if (CurrentToken != tok_name) {
+    LogErrorExpression("Expected trait name");
+    return false;
+  }
   string TraitName = Name;
   if (TraitTypes.count(TraitName) || StructTypes.count(TraitName) ||
       TypeAliases.count(TraitName))
@@ -160,14 +162,20 @@ static bool ParseTraitDefinition() {
              false;
     getNextToken(); // eat ']'
   }
-  if (CurrentToken != tok_colon)
-    return LogErrorExpression("Expected ':' after trait name"), false;
+  if (CurrentToken != tok_colon) {
+    LogErrorExpression("Expected ':' after trait name");
+    return false;
+  }
   getNextToken(); // eat ':'
-  if (CurrentToken != tok_eol)
-    return LogErrorExpression("Expected newline after trait header"), false;
+  if (CurrentToken != tok_eol) {
+    LogErrorExpression("Expected newline after trait header");
+    return false;
+  }
   consumeNewlines();
-  if (CurrentToken != tok_indent)
-    return LogErrorExpression("Expected an indented trait body"), false;
+  if (CurrentToken != tok_indent) {
+    LogErrorExpression("Expected an indented trait body");
+    return false;
+  }
   getNextToken(); // eat INDENT
 
   TraitTypeInfo Trait;
@@ -213,7 +221,8 @@ if (!Trait.TypeParameterName.empty()) {
   if (TraitReference.TypeArgument == ValueType::Error ||
       TraitReference.TypeArgument == ValueType::None ||
       TraitReference.TypeArgument == ValueType::TypeVariable)
-    return LogErrorExpression("Invalid trait type argument"), false;
+    LogErrorExpression("Invalid trait type argument");
+    return false;
   if (CurrentToken != tok_rbracket)
     return LogErrorExpression("Expected ']' after trait type argument"),
            false;

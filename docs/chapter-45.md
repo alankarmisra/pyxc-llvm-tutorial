@@ -76,7 +76,8 @@ static map<string, SignatureScanState> SignatureFileStates;
 *  if (ExistingState != SignatureFileStates.end()) {
 *    if (ExistingState->second == SignatureScanState::Done)
 *      return true;
--    return LogErrorExpression("Cyclic imports are not supported"), false;
+-    LogErrorExpression("Cyclic imports are not supported");
+-    return false;
 +    return true;
 *  }
 *  SignatureFileStates[CanonicalPath] = SignatureScanState::InProgress;

@@ -1013,8 +1013,7 @@ static unique_ptr<ExpressionNode> ParsePrimary();
 static unique_ptr<ExpressionNode> ParseVariableStatement();
 static unique_ptr<ExpressionNode> ParseStatement();
 static unique_ptr<ExpressionNode> ParseSimpleStatement();
-static unique_ptr<ExpressionNode> ParseLeadingNameSimpleStatement();
-static unique_ptr<ExpressionNode> ParseNonLeadingNameSimpleStatement();
+static unique_ptr<ExpressionNode> ParseAssignmentOrExpressionStatement();
 static unique_ptr<ExpressionNode> ParseBlock();
 static unique_ptr<ExpressionNode> ParseSuite();
 static unsigned TopLevelStatementCounter = 0;
@@ -1106,33 +1105,40 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
 
 static bool ParseForParts(unique_ptr<ExpressionNode> &Start, unique_ptr<ExpressionNode> &Condition,
                           unique_ptr<ExpressionNode> &Update, unique_ptr<ExpressionNode> &Body) {
-  if (CurrentToken != tok_assign)
-    return LogErrorExpression("Expected '=' after 'for' variable"), false;
+  if (CurrentToken != tok_assign) {
+    LogErrorExpression("Expected '=' after 'for' variable");
+    return false;
+  }
   getNextToken(); // eat '='
 
   Start = ParseExpression();
   if (!Start)
     return false;
 
-  if (CurrentToken != tok_comma)
-    return LogErrorExpression("Expected ',' after 'for' start value"), false;
+  if (CurrentToken != tok_comma) {
+    LogErrorExpression("Expected ',' after 'for' start value");
+    return false;
+  }
   getNextToken(); // eat ','
 
   Condition = ParseExpression();
   if (!Condition)
     return false;
 
-  if (CurrentToken != tok_comma)
-    return LogErrorExpression("Expected ',' after 'for' condition"), false;
+  if (CurrentToken != tok_comma) {
+    LogErrorExpression("Expected ',' after 'for' condition");
+    return false;
+  }
   getNextToken(); // eat ','
 
-  Update = CurrentToken == tok_name ? ParseLeadingNameSimpleStatement()
-                                  : ParseNonLeadingNameSimpleStatement();
+  Update = ParseAssignmentOrExpressionStatement();
   if (!Update)
     return false;
 
-  if (CurrentToken != tok_colon)
-    return LogErrorExpression("Expected ':' after 'for' step"), false;
+  if (CurrentToken != tok_colon) {
+    LogErrorExpression("Expected ':' after 'for' step");
+    return false;
+  }
   getNextToken(); // eat ':'
 
   // Parse the suite after ':' (inline statement or indented block).
@@ -1504,8 +1510,12 @@ static unique_ptr<ExpressionNode> ParseAssignmentRight(const string &Name) {
 }
 
 
-// Parse a name-led expression, then recognize an assignment statement if '=' follows.
-static unique_ptr<ExpressionNode> ParseLeadingNameSimpleStatement() {
+// Parse an expression, then recognize an assignment statement if '=' follows.
+// I check getLValueName() unconditionally, regardless of what token the
+// expression started with, since a parenthesized name like "(x)" parses to
+// the same NameExpressionNode as "x" and is just as valid an assignment
+// target.
+static unique_ptr<ExpressionNode> ParseAssignmentOrExpressionStatement() {
   auto Expr = ParseExpression();
   if (!Expr)
     return nullptr;
@@ -1518,19 +1528,6 @@ static unique_ptr<ExpressionNode> ParseLeadingNameSimpleStatement() {
     return LogErrorExpression("Destination of '=' must be a variable");
 
   return ParseAssignmentRight(*AssignedName);
-}
-
-// Parse non-name-leading expression forms for simple-statement and reject a
-// trailing '=' so assignment diagnostics stay local and specific.
-static unique_ptr<ExpressionNode> ParseNonLeadingNameSimpleStatement() {
-  auto Expr = ParseExpression();
-  if (!Expr)
-    return nullptr;
-
-  if (CurrentToken != tok_assign)
-    return Expr;
-
-  return LogErrorExpression("Destination of '=' must be a variable");
 }
 
 
@@ -1546,9 +1543,7 @@ static unique_ptr<ExpressionNode> ParseSimpleStatement() {
     return ParseContinueStatement();
   if (CurrentToken == tok_var)
     return ParseVariableStatement();
-  if (CurrentToken == tok_name)
-    return ParseLeadingNameSimpleStatement();
-  return ParseNonLeadingNameSimpleStatement();
+  return ParseAssignmentOrExpressionStatement();
 }
 
 /// statement

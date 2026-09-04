@@ -146,18 +146,24 @@ It takes a class name and a trait name and doesn't care where they came from. Th
 ```cpp
 static bool ParseImplementationDefinition() {
   getNextToken(); // eat 'impl'
-  if (CurrentToken != tok_name)
-    return LogErrorExpression("Expected trait name after 'impl'"), false;
+  if (CurrentToken != tok_name) {
+    LogErrorExpression("Expected trait name after 'impl'");
+    return false;
+  }
   string TraitName = Name;
   if (!TraitTypes.count(TraitName))
     return LogErrorExpression(("Unknown trait '" + TraitName + "'")),
            false;
   getNextToken(); // eat trait name
-  if (CurrentToken != tok_for)
-    return LogErrorExpression("Expected 'for' after trait name"), false;
+  if (CurrentToken != tok_for) {
+    LogErrorExpression("Expected 'for' after trait name");
+    return false;
+  }
   getNextToken(); // eat 'for'
-  if (CurrentToken != tok_name)
-    return LogErrorExpression("Expected class name after 'for'"), false;
+  if (CurrentToken != tok_name) {
+    LogErrorExpression("Expected class name after 'for'");
+    return false;
+  }
   string ClassName = Name;
   auto Class = StructTypes.find(ClassName);
   if (Class == StructTypes.end())
@@ -175,14 +181,20 @@ static bool ParseImplementationDefinition() {
                    .c_str()),
            false;
   getNextToken(); // eat class name
-  if (CurrentToken != tok_colon)
-    return LogErrorExpression("Expected ':' after impl header"), false;
+  if (CurrentToken != tok_colon) {
+    LogErrorExpression("Expected ':' after impl header");
+    return false;
+  }
   getNextToken(); // eat ':'
-  if (CurrentToken != tok_eol)
-    return LogErrorExpression("Expected newline after impl header"), false;
+  if (CurrentToken != tok_eol) {
+    LogErrorExpression("Expected newline after impl header");
+    return false;
+  }
   consumeNewlines();
-  if (CurrentToken != tok_indent)
-    return LogErrorExpression("Expected an indented impl body"), false;
+  if (CurrentToken != tok_indent) {
+    LogErrorExpression("Expected an indented impl body");
+    return false;
+  }
   getNextToken(); // eat INDENT
 
   vector<unique_ptr<FunctionDefinitionNode>> Methods;
@@ -207,8 +219,10 @@ static bool ParseImplementationDefinition() {
     else if (CurrentToken == tok_block_end)
       getNextToken();
   }
-  if (CurrentToken != tok_dedent)
-    return LogErrorExpression("Expected dedent after impl body"), false;
+  if (CurrentToken != tok_dedent) {
+    LogErrorExpression("Expected dedent after impl body");
+    return false;
+  }
 
   StructTypes[ClassName].ImplementedTraits.push_back(TraitName);
   if (!VerifyTraitConformance(ClassName, TraitName))

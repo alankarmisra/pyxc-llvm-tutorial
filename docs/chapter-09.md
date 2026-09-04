@@ -1,335 +1,306 @@
 ---
-description: "Add file input mode and a -v IR flag so pyxc can execute source files through the same JIT pipeline as the REPL."
+section: "LLVM and Execution"
+description: "Run pyxc source files through the same lexer, parser, optimizer, and JIT used by the REPL."
 ---
+
 # 9. pyxc: File Input Mode
 
-## What I Am Building
+Next: run a complete `.pyxc` file.
 
-There comes a point in any command-line existence when you realize you have typed `def add(a, b): a + b` into a terminal for the fortieth time, by hand, like some kind of medieval scribe, and that this is not a life. Real programming languages have long since worked out that you can simply put your code in a file and hand it to the computer all at once, an innovation apparently overlooked by whoever designed the REPL I've been living in since Chapter 2. This chapter fixes that oversight, and not a moment too soon.
-
-```bash
-$ build/pyxc test/file_mode.pyxc
-7.000000
-```
-
-I also stop printing IR by default and add `-v` for cases where I want to inspect it:
-
-<!-- code-merge:start -->
-```bash
-$ build/pyxc test/file_mode.pyxc -v
-```
-```llvm
-declare double @printd(double)
-define double @add(double %a, double %b) {
-entry:
-  %addtmp = fadd double %a, %b
-  ret double %addtmp
-}
-define double @__anon_expr() {
-entry:
-  %calltmp = call double @add(double 3.000000e+00, double 4.000000e+00)
-  %calltmp1 = call double @printd(double %calltmp)
-  ret double %calltmp1
-}
-```
-```bash
-7.000000
-```
-<!-- code-merge:end -->
-
-
-I can use the same option in the REPL:
-<!-- code-merge:start -->
-```bash
-$ build/pyxc -v
-```
-```pyxc
-ready> def add(a, b): a + b
-```
-```bash
-Parsed a function definition.
-```
-```llvm
-define double @add(double %a, double %b) {
-entry:
-  %addtmp = fadd double %a, %b
-  ret double %addtmp
-}
-```
-<!-- code-merge:end -->
-
-
-## Source Code
+Chapter 8 always reads from `stdin`. Keep that interactive mode, but add a positional filename:
 
 ```bash
-git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-09
+./build/pyxc program.pyxc
 ```
 
-## One `FILE*` for Both Modes
+Do not build a second compiler path. The clean boundary is:
 
-The C input API represents both standard input and an open file as a `FILE*`. I make the lexer read through an `Input` variable so I can point it at either source. These two globals sit right after `OptLevel` (from [Chapter 8](chapter-08.md)), just before the lexer section:
-
-```cppdiff
-*static cl::opt<unsigned> OptLevel("O", cl::desc("Optimization level"),
-*                                  cl::value_desc("0|1|2|3"), cl::Prefix,
-*                                  cl::init(2), cl::cat(PyxcCategory));
-*
-+static FILE *Input = stdin;
-+static bool IsRepl = true;
-*
-*//===----------------------------------------===//
-*// Lexer
-*//===----------------------------------------===//
+```text
+stdin or file -> one FILE* -> the same frontend and JIT
 ```
 
-I start with `Input` pointing to `stdin`. If I receive a filename, I open it and replace that pointer. The lexer always reads from `Input`, so I do not need separate lexer logic for the two modes.
-
-```cppdiff
-*static int advance() {
--  int LastChar = getchar();
-+  int LastChar = fgetc(Input);
-*
-*  // case: '\r' or '\r\n'
-*  if (LastChar == '\r') {
--    int NextChar = getchar();
-+    int NextChar = fgetc(Input);
-*
-*    // A following '\n' is part of the same line ending; eat it.
-*    // Anything else belongs to the next token; put it back.
-*    // (EOF can't be put back at all, so it's excluded from that check.
-*    // The next getchar() will still return EOF, so we don't lose it.)
-*    if (NextChar != '\n' && NextChar != EOF)
--      ungetc(NextChar, stdin);
-+      ungetc(NextChar, Input);
-*    PyxcSourceManager.onChar('\n');
-*    LexerLocation.Line++;
-*    LexerLocation.Column = 0;
-*    return '\n';
-*  }
-*  ...
-*}
-```
-
-Changing the pointer changes the source of every later character read.
-
-## Parsing the Command Line
-
-LLVM already requires me to process `-O` through its command-line library. I add two more options to the same setup: an optional filename and `-v`.
-
-### Selecting the Input Mode
-
-`InputFile` goes right after `PyxcCategory`, before `OptLevel` (from [Chapter 8](chapter-08.md)):
-
-```cppdiff
-*static cl::OptionCategory PyxcCategory("Pyxc options");
-*
-+// Optional positional input: 0 args => REPL, 1 arg => file mode.
-+static cl::opt<string> InputFile(cl::Positional, cl::desc("[script.pyxc]"),
-+                                      cl::init(""), cl::cat(PyxcCategory));
-*...
-*static cl::opt<unsigned> OptLevel("O", cl::desc("Optimization level"),
-*                                  cl::value_desc("0|1|2|3"), cl::Prefix,
-*                                  cl::init(2), cl::cat(PyxcCategory));
-```
-
-I mark `InputFile` as positional so a bare argument such as `program.pyxc` fills it. I use an empty string as the default, which means no filename was provided.
-
-```cppdiff
-*int ProcessCommandLine(int argc, const char **argv) {
-*  cl::HideUnrelatedOptions(PyxcCategory);
-*  cl::ParseCommandLineOptions(argc, argv, "pyxc\n");
-*
-*  if (OptLevel > 3) {
-*    fprintf(stderr, "Error: -O level must be 0, 1, 2, or 3\n");
-*    return -1;
-*  }
-*
-+  if (!InputFile.empty()) {
-+    Input = fopen(InputFile.c_str(), "r");
-+    if (!Input) {
-+      perror(InputFile.c_str());
-+      return -1;
-+    }
-+    IsRepl = false;
-+  } else {
-+    IsRepl = true;
-+  }
-+
-*  return 0;
-*}
-```
-
-If I have a filename, I open it, point `Input` at the resulting handle, and disable REPL output. Otherwise, I keep reading from `stdin`.
-
-When `fopen` fails, it sets `errno`. I use `perror` to print the filename followed by the operating system's error description.
-
-### Selecting IR Output
-
-`VerboseIR` goes right after `InputFile`, before `OptLevel`:
-
-```cppdiff
-*static cl::opt<string> InputFile(cl::Positional, cl::desc("[script.pyxc]"),
-*                                      cl::init(""), cl::cat(PyxcCategory));
-*
-+// Verbose IR dump in both REPL and file mode.
-+static cl::opt<bool> VerboseIR("v",
-+                               cl::desc("Print generated LLVM IR to stderr"),
-+                               cl::init(false), cl::cat(PyxcCategory));
-*
-*static cl::opt<unsigned> OptLevel("O", cl::desc("Optimization level"),
-*                                  cl::value_desc("0|1|2|3"), cl::Prefix,
-*                                  cl::init(2), cl::cat(PyxcCategory));
-```
-
-I register `VerboseIR` as a Boolean option named `v`. It remains false unless I pass `-v`.
-
-## Suppressing REPL Noise in File Mode
-
-I suppress output that belongs to an interactive session when I run a file:
-
-- `ready>` prompts
-- `Parsed a function definition.` / `Parsed an extern.` / `Parsed a top-level expression.` confirmations
-- `Evaluated to ...` after each expression
-
-I centralize the repeated `IsRepl` check in two helpers I already introduced in [Chapter 8](chapter-08.md):
-
-```cppdiff
-*void PrintReplPrompt() {
-+  if (IsRepl) {
-*    fflush(stdout);
-*    fprintf(stderr, "ready> ");
-+  }
-*}
-```
-
-```cppdiff
-*void Log(const string &message) {
-+  if (IsRepl)
-*    fprintf(stderr, "%s", message.c_str());
-*}
-```
-
-I apply the same check to the automatic result, at the end of `HandleTopLevelExpression()`:
-
-```cppdiff
-*static void HandleTopLevelExpression() {
-*  ...
-*  if (auto *FunctionIR = FunctionDefinition->codegen()) {
-*    ...
-*    double (*FP)() = ExprSymbol.toPtr<double (*)()>();
-*    double result = FP();
-+    if (IsRepl)
-*      PrintEvaluationResult(result);
-*    ...
-*  }
-*}
-```
-
-In file mode, the program only produces output that the pyxc source requests through functions such as `printd` and `putchard`.
-
-## Printing IR with -v
-
-Each handler checks `VerboseIR` before printing generated IR:
-
-```cppdiff
-*static void HandleFunctionDefinition() {
-*  ...
-*  Log("Parsed a function definition.\n");
-+  if (VerboseIR)
-*    FunctionIR->print(errs());
-*  ...
-*}
-```
-
-```cppdiff
-*static void HandleExtern() {
-*  ...
-*  Log("Parsed an extern.\n");
-+  if (VerboseIR)
-*    FunctionIR->print(errs());
-*  ...
-*}
-```
-
-```cppdiff
-*static void HandleTopLevelExpression() {
-*  ...
-*  Log("Parsed a top-level expression.\n");
-+  if (VerboseIR)
-*    FunctionIR->print(errs());
-*  ...
-*}
-```
-
-After `MainLoop()` finishes, I close an input file that I opened, at the end of `main()`:
-
-```cppdiff
-*int main(int argc, const char **argv) {
-*  ...
-*  MainLoop();
-*
-+  if (Input && Input != stdin) {
-+    fclose(Input);
-+    Input = stdin;
-+  }
-+
-*  return 0;
-*}
-```
-
-I check `Input != stdin` because I do not own standard input and must not close it. I reset the pointer after closing the file so it no longer refers to a closed handle.
-
-## Build and Run
+Work in:
 
 ```bash
 cd code/chapter-09
-cmake -S . -B build && cmake --build build
 ```
+
+## 1. Add Shared Input State
+
+Add:
+
+```cpp
+static FILE *Input = stdin;
+static bool IsRepl = true;
+```
+
+`Input` identifies the character source. `IsRepl` controls presentation only: prompts and “Parsed...” chatter belong to an interactive session, not normal script output.
+
+## 2. Route Every Character Read through `Input`
+
+In `advance()`, replace:
+
+```cpp
+getchar()
+```
+
+with:
+
+```cpp
+fgetc(Input)
+```
+
+Replace newline lookahead reads the same way, and change:
+
+```cpp
+ungetc(NextChar, stdin)
+```
+
+to:
+
+```cpp
+ungetc(NextChar, Input)
+```
+
+This is the only lexer change required. Tokens, locations, diagnostics, parsing, codegen, optimization, and JIT execution remain shared.
+
+## 3. Add the Positional Input Option
+
+Near the existing LLVM command-line options, add:
+
+```cpp
+static cl::opt<string> InputFile(
+    cl::Positional, cl::desc("[script.pyxc]"),
+    cl::init(""), cl::cat(PyxcCategory));
+```
+
+This accepts zero or one positional filename:
+
+```text
+no filename -> REPL
+filename    -> file mode
+```
+
+## 4. Add Optional IR Output
+
+Chapter 8 always prints generated IR. Add:
+
+```cpp
+static cl::opt<bool> VerboseIR(
+    "v", cl::desc("Print generated LLVM IR to stderr"),
+    cl::init(false), cl::cat(PyxcCategory));
+```
+
+Wrap every successful IR dump:
+
+```cpp
+if (VerboseIR)
+  FunctionIR->print(errs());
+```
+
+This makes normal program output usable while retaining an inspection mode:
 
 ```bash
-./build/pyxc -v
+./build/pyxc -v program.pyxc
 ```
 
-or
+Keep IR on `stderr`; runtime output remains on `stdout`.
+
+## 5. Open the Selected Input
+
+Extend `ProcessCommandLine()` after parsing and optimization-level validation:
+
+```cpp
+if (!InputFile.empty()) {
+  Input = fopen(InputFile.c_str(), "r");
+  if (!Input) {
+    perror(InputFile.c_str());
+    return -1;
+  }
+  IsRepl = false;
+} else {
+  IsRepl = true;
+}
+
+return 0;
+```
+
+Use `perror()` so a missing file includes the operating system's explanation.
+
+Do this before priming the lexer. `getNextToken()` must read its first character from the selected stream.
+
+## 6. Centralize REPL-Only Output
+
+Add:
+
+```cpp
+void PrintReplPrompt() {
+  if (IsRepl) {
+    fflush(stdout);
+    fprintf(stderr, "ready> ");
+  }
+}
+```
+
+Replace direct prompt printing with `PrintReplPrompt()`.
+
+Add a REPL-only logging helper:
+
+```cpp
+void Log(const string &Message) {
+  if (IsRepl)
+    fprintf(stderr, "%s", Message.c_str());
+}
+```
+
+Replace confirmation messages such as:
+
+```cpp
+fprintf(stderr, "Parsed a function definition.\n");
+```
+
+with:
+
+```cpp
+Log("Parsed a function definition.\n");
+```
+
+Do the same for externs and top-level expressions.
+
+Do not suppress diagnostics. Syntax, codegen, and file-opening errors must still be printed in both modes.
+
+## 7. Keep Evaluation Output Explicit
+
+Use one result function:
+
+```cpp
+void PrintEvaluationResult(double Result) {
+  fprintf(stdout, "Evaluated to %f\n", Result);
+}
+```
+
+Call it after executing a top-level anonymous expression.
+
+This is program behavior, not parser chatter. Runtime functions such as `printd` and `putchard` also continue writing normally.
+
+## 8. Close the File
+
+After `MainLoop()` returns, add:
+
+```cpp
+if (Input && Input != stdin) {
+  fclose(Input);
+  Input = stdin;
+}
+```
+
+Do not close `stdin`.
+
+## 9. Build and Run the REPL
 
 ```bash
-./build/pyxc filename.pyxc -v
+cmake -S . -B build \
+  -DLLVM_DIR="$(llvm-config --cmakedir)"
+cmake --build build
+./build/pyxc
 ```
+
+Try:
+
+```pyxc
+ready> 1 + 2
+```
+
+Expected:
+
+```text
+Parsed a top-level expression.
+Evaluated to 3.000000
+```
+
+The REPL behavior should be unchanged except that IR is hidden unless `-v` is present.
+
+## 10. Run a Source File
+
+Create or use a test file such as:
+
+```pyxc
+extern def printd(x)
+def square(x): x * x
+printd(square(5))
+```
+
+Run:
+
+```bash
+./build/pyxc program.pyxc
+```
+
+Expected runtime output:
+
+```text
+25.000000
+Evaluated to 0.000000
+```
+
+There should be no `ready>` prompt and no “Parsed...” messages.
+
+Inspect the same run with IR:
+
+```bash
+./build/pyxc -v program.pyxc
+```
+
+Redirect the streams independently when useful:
+
+```bash
+./build/pyxc -v program.pyxc >program.out 2>program.ll
+```
+
+## 11. Test the Error Boundary
+
+Run a missing file:
+
+```bash
+./build/pyxc does-not-exist.pyxc
+```
+
+Expected behavior:
+
+```text
+does-not-exist.pyxc: <operating-system error>
+```
+
+and a nonzero exit code.
+
+Run the full suite:
 
 ```bash
 llvm-lit -v test/
 ```
 
-## Try It
+What you built is one compiler with two input presentations:
 
-If the filename I pass doesn't exist, `fopen` fails and `perror` reports it using the operating system's own error text:
-
-<!-- code-merge:start -->
-```bash
-$ build/pyxc nosuchfile.pyxc
-```
 ```text
-nosuchfile.pyxc: No such file or directory
+REPL mode -> stdin + prompts + confirmations
+file mode -> file  + quiet compiler presentation
+both      -> same lexer/parser/codegen/optimizer/JIT
 ```
-<!-- code-merge:end -->
 
-`ProcessCommandLine` returns `-1` in this case, so `main` never reaches `MainLoop()` at all.
-
-## What's Next
-
-[Chapter 10](chapter-10.md) adds comparisons, `if`/`else`, and `for` loops.
+Next: [Chapter 10](chapter-10.md) adds comparisons, `if` expressions, and `for` loops.
 
 ## Need Help?
 
 Build issues? Questions?
 
-- **GitHub Issues:** [Report problems](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues)
-- **Discussions:** [Ask questions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions)
+- [Report a problem with GitHub Issues](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues)
+- [Ask a question in GitHub Discussions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions)
 
 Include:
-- Your OS and version
-- Full error message
-- Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
 
-I'll help you figure it out.
+- Your operating system and version
+- The chapter number
+- The exact command you ran
+- The complete error message
+- The output of `c++ --version` and `cmake --version`
+- The output of `llvm-config --version` for Chapter 6 and later

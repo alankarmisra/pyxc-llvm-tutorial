@@ -1,30 +1,31 @@
 ---
 section: "LLVM and Execution"
-description: "Install LLVM with everything you need: clang, lld, lldb, clangd, and lit — via Homebrew (macOS/Linux), the official installer (Windows), or from source."
+description: "Install LLVM and verify that pyxc's CMake project can discover it."
 ---
+
 # 6. pyxc: Installing LLVM
 
-## What I Am Building
+Next: connect the working pyxc frontend to LLVM.
 
-LLVM is enormous, in the way a cathedral is enormous: deeply impressive, requires scaffolding to approach, and you will be waiting a while before anyone lets you inside. The good news is someone else already built it, so mostly what this chapter requires of me is patience and about a gigabyte of hard drive space I hadn't planned on giving up.
+Do not add code generation yet. This chapter has one smaller boundary:
 
-The compiler from [Chapter 5](chapter-05.md) can parse pyxc and report errors with source locations. To turn the AST into machine code, I need LLVM — specifically with the following tools: `lld`, `clangd`, `lldb`, and `llvm-lit`. I'll get to using them in the following chapters. On macOS and Linux, Homebrew gets you there in two commands. On Windows, the official LLVM installer does the same. Building compilers is hard enough. I don't need to torture myself needlessly. Unless I want to. Consequently, if you're feeling adventurous, you could build from source instead — I did that too just to make sure the instructions are legit. All paths end up in the same place. 
-
-
-!!!note
-    I'm a bit concerned about the longevity of this chapter. Installation dynamics change quite frequently and things break occassionally, if not often. These forces are outside my control. Which is why if something breaks, PLEASE let me know so I can fix this chapter so it continues to work for others that follow you. I've been very close to giving up on tutorials because I couldn't get the base infrastructure to install and I'd hate for that to happen to you or to others. 
-
-## Source Code
-
-```bash
-git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-06
+```text
+installed LLVM -> find_package(LLVM) succeeds
 ```
 
-pyxc itself doesn't change in this chapter — the source file is identical to Chapter 5. What changes is `CMakeLists.txt`: it now asks CMake to actually find the LLVM I'm about to install.
+Chapter 7 depends on LLVM headers and libraries. If discovery is unreliable now, every later build error will be harder to diagnose.
+
+Work in:
+
+```bash
+cd code/chapter-06
+```
+
+## 1. Make CMake Require LLVM
+
+The C++ source stays the same as Chapter 5. In `CMakeLists.txt`, add:
 
 ```cmake
-# I verify that CMake can find the LLVM installation prepared in this chapter.
 find_package(LLVM REQUIRED CONFIG)
 
 message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
@@ -34,510 +35,263 @@ include_directories(SYSTEM ${LLVM_INCLUDE_DIRS})
 add_definitions(${LLVM_DEFINITIONS})
 ```
 
-I don't call any LLVM API yet — that's Chapter 7. This chapter's entire job is making sure `find_package(LLVM REQUIRED CONFIG)` succeeds, since every chapter from here on depends on it.
+`CONFIG` tells CMake to find LLVM's installed `LLVMConfig.cmake`. The two status messages make the selected version and installation path visible during every configure.
 
-## macOS / Linux — Homebrew
-
-```bash
-brew install llvm
-brew install lld
-```
-
-Homebrew installs LLVM as *keg-only* — it won't replace the system compiler, so you need to add it to your PATH explicitly. Add the following to your shell config (`~/.zshrc`, `~/.bashrc`, or `~/.bash_profile`):
+If LLVM is already installed, try the verification immediately:
 
 ```bash
-# LLVM & LLD Toolchain Setup
-# brew --prefix resolves the install path regardless of where Homebrew lives
-export LLVM_ROOT="$(brew --prefix llvm)"
-export LLD_ROOT="$(brew --prefix lld)"
-
-# Add both to PATH
-# This ensures clang, lld, lldb, and clangd are all found
-export PATH="$LLVM_ROOT/bin:$LLD_ROOT/bin:$PATH"
-
-# Compilation Flags
-export LDFLAGS="-L$LLVM_ROOT/lib -L$LLD_ROOT/lib"
-export CPPFLAGS="-I$LLVM_ROOT/include -I$LLD_ROOT/include"
-export CMAKE_PREFIX_PATH="$LLVM_ROOT;$LLD_ROOT"
-```
-
-Then reload your shell:
-
-```bash
-source ~/.zshrc   # or ~/.bashrc
-```
-
-#### Verify
-
-```bash
-clang --version
-clangd --version
-lldb --version
-lld --version
-llvm-lit --version
-```
-
-The first four should report the same version and point into the Homebrew prefix — run `brew --prefix llvm` and `brew --prefix lld` to confirm the exact paths on your machine.
-
-`llvm-lit` may not be bundled with the Homebrew formula. If the last command fails, install it separately:
-
-```bash
-pip install lit
-```
-
-After a pip install, the binary is `lit`, not `llvm-lit`. So `lit --version` is what you'd run to verify it.
-
-If that's working, you're done. Skip straight to [Chapter 7](chapter-07.md).
-
-## Windows — Official Installer
-
-Download the latest `LLVM-<version>-win64.exe` from the [LLVM releases page](https://github.com/llvm/llvm-project/releases). Run the installer and when prompted, select **"Add LLVM to the system PATH"**.
-
-Then set the remaining environment variables. Add to your PowerShell profile (`$PROFILE`):
-
-```powershell
-# LLVM Toolchain Setup
-$env:LLVM_ROOT = "C:\Program Files\LLVM"
-
-# Add to PATH (if the installer didn't already)
-$env:PATH = "$env:LLVM_ROOT\bin;$env:PATH"
-
-# Compilation Flags
-$env:LDFLAGS = "-L$env:LLVM_ROOT\lib"
-$env:CPPFLAGS = "-I$env:LLVM_ROOT\include"
-$env:CMAKE_PREFIX_PATH = "$env:LLVM_ROOT"
-```
-
-Or set them permanently via **System Properties → Environment Variables**.
-
-#### Verify
-
-```powershell
-clang --version
-clangd --version
-lldb --version
-lld --version
-llvm-lit --version
-```
-
-The first four should report the same version.
-
-`llvm-lit` may not be included in the official installer. If the last command fails, install it separately:
-
-```powershell
-pip install lit
-```
-
-After a pip install, the binary is `lit`, not `llvm-lit`. So `lit --version` is what you'd run to verify it.
-
-If that's working, you're done. Skip straight to [Chapter 7](chapter-07.md).
-
-## Build from Source
-
-If you'd rather build LLVM yourself — or Homebrew isn't an option for some reason — the result is identical: same tools, same capabilities, just more steps and a longer wait.
-
-### What You'll Install
-
-By the end of this chapter, you'll have:
-
-```text
-~/llvm-21-with-clang-lld-lldb/
-├── bin/
-│   ├── clang
-│   ├── clang++
-│   ├── clangd
-│   ├── lld
-│   ├── lldb
-│   └── llvm-config
-├── lib/
-└── include/
-```
-
-All the tools I need in one place. `llvm-lit` is the exception: it's a Python script generated in the build tree, and `ninja install` doesn't copy it out. I install it separately with `pip install lit` in Step 6 below.
-
-### Time and Space Requirements
-
-**Build time:** 30-60 minutes (depends on your machine)
-**Disk space:** ~15 GB for the build, ~3 GB for the install
-
-If that's too much, stick with [pre-built LLVM package](https://releases.llvm.org/download.html) for now. You can always build from source later when you need it.
-
-### Prerequisites
-
-You need:
-1. A C++ compiler
-2. [CMake](https://cmake.org/)
-3. [Ninja](https://ninja-build.org/)
-4. Python 3 (`llvm-lit` is a Python script)
-
-#### macOS
-
-```bash
-# Install Xcode Command Line Tools
-xcode-select --install
-
-# Install CMake and Ninja
-brew install cmake ninja
-```
-
-#### Ubuntu/Debian
-
-```bash
-sudo apt update
-sudo apt install build-essential cmake ninja-build
-```
-
-#### Fedora
-
-```bash
-sudo dnf install gcc-c++ cmake ninja-build
-```
-
-#### Windows
-
-Install:
-1. Visual Studio Build Tools (C++ workload)
-2. [CMake](https://cmake.org/)
-3. [Ninja](https://ninja-build.org/)
-
-Make sure all three are on your `PATH` — CMake and Ninja installers have an option to add themselves; Visual Studio Build Tools does it automatically.
-
-### Optional: Install zstd
-
-Some LLVM builds need the `zstd` compression library. If you see `library 'zstd' not found` errors later, install it:
-
-**macOS:**
-```bash
-brew install zstd
-```
-
-**Ubuntu/Debian:**
-```bash
-sudo apt install libzstd-dev
-```
-
-**Fedora:**
-```bash
-sudo dnf install libzstd-devel
-```
-
-You can skip this for now and come back if you hit errors.
-
-### Step 1: Clone LLVM
-
-I'll build LLVM 21.1.6 (stable release at time of writing — check the [LLVM releases page](https://github.com/llvm/llvm-project/releases) for newer tags):
-
-```bash
-git clone --depth 1 --branch llvmorg-21.1.6 https://github.com/llvm/llvm-project.git
-cd llvm-project
-```
-
-The `--depth 1` keeps the download small (I don't need full git history).
-
-### Step 2: Configure the Build
-
-Create a build directory:
-
-```bash
-mkdir build && cd build
-```
-
-Now configure. This tells CMake what to build and where to install it.
-
-#### Linux / macOS
-
-```bash
-cmake -G Ninja ../llvm \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra;lld;lldb" \
-  -DCMAKE_INSTALL_PREFIX=$HOME/llvm-21-with-clang-lld-lldb \
-  -DLLVM_TARGETS_TO_BUILD="X86;AArch64" \
-  -DLLVM_INCLUDE_EXAMPLES=OFF \
-  -DLLVM_INCLUDE_TESTS=ON \
-  -DLLVM_INCLUDE_BENCHMARKS=OFF \
-  -DLLVM_ENABLE_ASSERTIONS=OFF
-```
-
-#### Windows (PowerShell)
-
-```powershell
-cmake -G Ninja ..\llvm `
-  -DCMAKE_BUILD_TYPE=Release `
-  -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra;lld;lldb" `
-  -DCMAKE_INSTALL_PREFIX=$HOME\llvm-21-with-clang-lld-lldb `
-  -DLLVM_TARGETS_TO_BUILD="X86" `
-  -DLLVM_INCLUDE_EXAMPLES=OFF `
-  -DLLVM_INCLUDE_TESTS=ON `
-  -DLLVM_INCLUDE_BENCHMARKS=OFF `
-  -DLLVM_ENABLE_ASSERTIONS=OFF
-```
-
-**What these flags mean:**
-
-- **`-G Ninja`** - Use Ninja (faster than Make)
-- **`CMAKE_BUILD_TYPE=Release`** - Optimized build (not debug)
-- **`LLVM_ENABLE_PROJECTS`** - Build clang, clangd, lld, and lldb
-- **`CMAKE_INSTALL_PREFIX`** - Where to install (your home directory)
-- **`LLVM_TARGETS_TO_BUILD`** - Only build for x86 and ARM (speeds up build)
-- **`LLVM_INCLUDE_TESTS=ON`** - Build LLVM's own test suite (uses `llvm-lit`, which the build generates on its own regardless of this flag)
-
-If CMake complains about missing dependencies, install them and re-run.
-
-### Step 3: Build
-
-```bash
-ninja
-```
-
-This takes 30-60 minutes. Go grab coffee.
-
-**If it fails:** Check the error message. Common issues:
-- Out of memory → Close other programs, try again
-- Missing dependency → Install it (CMake will tell you what)
-- Corrupted download → Delete `llvm-project` and re-clone
-
-### Step 4: Install
-
-```bash
-ninja install
-```
-
-This copies everything to `~/llvm-21-with-clang-lld-lldb/`.
-
-Verify it worked:
-
-```bash
-ls ~/llvm-21-with-clang-lld-lldb/bin
-```
-
-You should see: `clang`, `clang++`, `lld`, `lldb`, `llvm-config`, and more. `llvm-lit` won't be there — see Step 6.
-
-Once the install is done, you can delete the `build/` directory to reclaim the ~15 GB of build artifacts:
-
-```bash
-cd .. && rm -rf build
-```
-
-### Step 5: Update Your PATH
-
-Add LLVM to your `PATH` so the system finds it first:
-
-#### macOS / Linux (Bash)
-
-Add to `~/.bashrc` or `~/.bash_profile`:
-
-```bash
-export PATH="$HOME/llvm-21-with-clang-lld-lldb/bin:$PATH"
-```
-
-Then reload:
-```bash
-source ~/.bashrc
-```
-
-#### macOS / Linux (Zsh)
-
-Add to `~/.zshrc`:
-
-```zsh
-export PATH="$HOME/llvm-21-with-clang-lld-lldb/bin:$PATH"
-```
-
-Then reload:
-```zsh
-source ~/.zshrc
-```
-
-#### Windows (PowerShell)
-
-Add to your PowerShell profile (`$PROFILE`):
-
-```powershell
-$env:PATH = "$HOME\llvm-21-with-clang-lld-lldb\bin;$env:PATH"
-```
-
-Or add it permanently via System Environment Variables.
-
-### Step 6: Verify
-
-Check that your shell finds the right LLVM:
-
-#### macOS / Linux
-
-```bash
-which clang
-# Should show: /Users/yourname/llvm-21-with-clang-lld-lldb/bin/clang
-
-clang --version
-llvm-config --version
-# Both should report the version you built
-```
-
-`ninja install` doesn't install `llvm-lit`; it only ever exists in the build tree. Install it separately:
-
-```bash
-pip install lit
-```
-
-After a pip install, the binary is `lit`, not `llvm-lit`. So `lit --version` is what you'd run to verify it.
-
-#### Windows (PowerShell)
-
-```powershell
-Get-Command clang | Select-Object -ExpandProperty Source
-# Should show: C:\Users\yourname\llvm-21-with-clang-lld-lldb\bin\clang.exe
-
-clang --version
-llvm-config --version
-# Both should report the version you built
-```
-
-`ninja install` doesn't install `llvm-lit`; it only ever exists in the build tree. Install it separately:
-
-```powershell
-pip install lit
-```
-
-After a pip install, the binary is `lit`, not `llvm-lit`. So `lit --version` is what you'd run to verify it.
-
-If the version shown doesn't match what you built, your `PATH` isn't set correctly. Fix that before continuing.
-
-### Step 7: Set LLVM_DIR (for CMake)
-
-When building the pyxc compiler, CMake needs to find LLVM. Tell it where:
-
-#### macOS / Linux
-
-Add to `~/.bashrc` or `~/.zshrc`:
-
-```bash
-export LLVM_DIR="$HOME/llvm-21-with-clang-lld-lldb/lib/cmake/llvm"
-```
-
-Reload your shell.
-
-#### Windows
-
-Add to your PowerShell profile or Environment Variables:
-
-```powershell
-$env:LLVM_DIR = "$HOME\llvm-21-with-clang-lld-lldb\lib\cmake\llvm"
-```
-
-### Optional: Configure VS Code
-
-If you're using VS Code, point it to your new `clangd`:
-
-#### Install the clangd Extension
-
-1. Open VS Code
-2. Install the "clangd" extension (disable the C/C++ extension if you see conflicts)
-
-#### Configure clangd Path
-
-Add to `.vscode/settings.json` in your project:
-
-**macOS / Linux:**
-```json
-{
-  "clangd.path": "/Users/yourname/llvm-21-with-clang-lld-lldb/bin/clangd"
-}
-```
-
-**Windows:**
-```json
-{
-  "clangd.path": "C:\\Users\\yourname\\llvm-21-with-clang-lld-lldb\\bin\\clangd.exe"
-}
-```
-
-(Adjust the path for your username.)
-
-#### Generate compile_commands.json
-
-When you build pyxc, CMake will generate `compile_commands.json`. This tells clangd how to compile your code.
-
-In your project's CMakeLists.txt, add:
-
-```cmake
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-```
-
-After building, you'll see `build/compile_commands.json`. clangd reads this automatically.
-
-## Troubleshooting
-
-### Build Fails with "out of memory"
-
-Ninja uses all CPU cores by default. Limit it:
-
-```bash
-ninja -j4  # Use 4 cores instead of all
-```
-
-### Can't Find zstd Library
-
-Install zstd (see "Optional: Install zstd" above), then rebuild.
-
-Or tell CMake to skip it:
-
-```bash
-cmake -G Ninja ../llvm \
-  -DLLVM_ENABLE_ZSTD=OFF \
-  # ... other flags
-```
-
-### Wrong Clang Version Still Showing
-
-Check:
-
-```bash
-echo $PATH
-```
-
-Make sure your LLVM `bin` directory comes BEFORE `/usr/bin` or other system paths.
-
-### Windows: Ninja Not Found
-
-Make sure Ninja is on your `PATH`:
-
-```powershell
-ninja --version
-```
-
-If that fails, download Ninja and add its directory to `PATH` in System Environment Variables.
-
-## Try It
-
-With LLVM installed and on my `PATH`, I configure the chapter and watch CMake find it:
-
-```bash
-cd code/chapter-06
 cmake -S . -B build
 ```
 
+Expected shape:
+
 ```text
--- Found LLVM 21.1.6
--- Using LLVMConfig.cmake in: /path/to/llvm/lib/cmake/llvm
+-- Found LLVM <version>
+-- Using LLVMConfig.cmake in: <path>
 -- Configuring done
 ```
 
-The exact version and path depend on how I installed LLVM, but seeing `Found LLVM` at all is the real payoff of this chapter — everything from Chapter 7 onward assumes this line succeeds.
+If that works, build and run the unchanged frontend:
 
-## What's Next
+```bash
+cmake --build build
+./build/pyxc
+```
 
-[Chapter 7](chapter-07.md) connects the AST to LLVM IR for the first time.
+Otherwise, choose one installation path below.
+
+## 2. Install with Homebrew on macOS or Linux
+
+Install LLVM and the separately packaged linker/debugger tools:
+
+```bash
+brew install llvm lld lldb
+```
+
+Homebrew keeps LLVM separate from the system toolchain. Ask Homebrew for the prefix rather than hard-coding `/opt/homebrew` or `/usr/local`:
+
+```bash
+brew --prefix llvm
+brew --prefix lld
+brew --prefix lldb
+```
+
+For the current shell, export a project-specific LLVM location:
+
+```bash
+export PYXC_LLVM_ROOT="$(brew --prefix llvm)"
+export PATH="$PYXC_LLVM_ROOT/bin:$(brew --prefix lld)/bin:$(brew --prefix lldb)/bin:$PATH"
+```
+
+Then configure pyxc explicitly:
+
+```bash
+cmake -S . -B build \
+  -DLLVM_DIR="$PYXC_LLVM_ROOT/lib/cmake/llvm"
+cmake --build build
+```
+
+Using `LLVM_DIR` is more precise than hoping CMake searches the correct prefix. It points directly to the directory containing `LLVMConfig.cmake`.
+
+Verify the tools:
+
+```bash
+llvm-config --version
+clang --version
+lld --version
+lldb --version
+```
+
+Homebrew may not provide a convenient `llvm-lit` command. If neither `llvm-lit` nor `lit` exists, install the Python package:
+
+```bash
+python3 -m pip install lit
+lit --version
+```
+
+## 3. Install a Released Build on Windows
+
+Download the current Windows release installer from the official [LLVM releases page](https://github.com/llvm/llvm-project/releases).
+
+During installation, allow the installer to add LLVM to `PATH`, or add its `bin` directory afterward. A typical installation prefix is:
+
+```text
+C:\Program Files\LLVM
+```
+
+Open a new PowerShell session and verify:
+
+```powershell
+clang --version
+lld --version
+lldb --version
+```
+
+Configure pyxc with the LLVM CMake package directory:
+
+```powershell
+cmake -S . -B build `
+  -DLLVM_DIR="C:\Program Files\LLVM\lib\cmake\llvm"
+cmake --build build
+```
+
+If `lit` is missing:
+
+```powershell
+py -m pip install lit
+lit --version
+```
+
+If the release package does not contain the development CMake files required by `find_package`, use a package manager that provides LLVM development files or build LLVM from source.
+
+## 4. Build LLVM from Source
+
+Use this route when you want a specific revision, need all development files, or plan to work on LLVM itself.
+
+Install the prerequisites first:
+
+```text
+CMake 3.20 or newer
+Ninja
+Python 3.8 or newer
+a working C and C++ compiler
+Git
+```
+
+Clone the monorepo:
+
+```bash
+git clone --depth 1 https://github.com/llvm/llvm-project.git
+cd llvm-project
+```
+
+Choose explicit build and installation directories. Replace the example install prefix with a location you own:
+
+```bash
+cmake -S llvm -B build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX="$PWD/install" \
+  -DLLVM_ENABLE_PROJECTS="clang;lld;lldb" \
+  -DLLVM_INSTALL_UTILS=ON
+```
+
+Build:
+
+```bash
+cmake --build build
+```
+
+This can consume substantial time, memory, and disk space. If linking exhausts memory, reconfigure with a smaller link-job limit:
+
+```bash
+-DLLVM_PARALLEL_LINK_JOBS=1
+```
+
+Optionally run LLVM's tests:
+
+```bash
+cmake --build build --target check-all
+```
+
+Install into the chosen prefix:
+
+```bash
+cmake --build build --target install
+```
+
+Then configure pyxc against it:
+
+```bash
+cd /path/to/pyxc-llvm-tutorial/code/chapter-06
+cmake -S . -B build \
+  -DLLVM_DIR=/path/to/llvm-project/install/lib/cmake/llvm
+cmake --build build
+```
+
+You may also configure pyxc directly against an LLVM build tree:
+
+```bash
+cmake -S . -B build \
+  -DLLVM_DIR=/path/to/llvm-project/build/lib/cmake/llvm
+```
+
+## 5. Diagnose CMake Discovery Failures
+
+If CMake reports:
+
+```text
+Could not find a package configuration file provided by "LLVM"
+```
+
+find the configuration file:
+
+```bash
+find /path/to/llvm -name LLVMConfig.cmake
+```
+
+Then pass its containing directory—not the file itself—as `LLVM_DIR`:
+
+```bash
+cmake -S . -B build -DLLVM_DIR=/path/containing/LLVMConfig.cmake
+```
+
+If CMake cached a wrong LLVM installation, use a new build directory:
+
+```bash
+cmake -S . -B build-llvm \
+  -DLLVM_DIR=/correct/path/lib/cmake/llvm
+cmake --build build-llvm
+```
+
+This avoids mixing configuration from two LLVM versions.
+
+## 6. Verify the Complete Boundary
+
+Run:
+
+```bash
+llvm-config --version
+llvm-config --cmakedir
+```
+
+The second command should identify the directory you pass as `LLVM_DIR`.
+
+Then configure, build, and test:
+
+```bash
+cmake -S . -B build \
+  -DLLVM_DIR="$(llvm-config --cmakedir)"
+cmake --build build
+llvm-lit -v test/  # use `lit -v test/` if installed from pip
+```
+
+The chapter source still behaves like Chapter 5. The new result is entirely in the build system:
+
+```text
+CMake found LLVM headers, definitions, version, and package configuration
+```
+
+Useful official references:
+
+- [Getting Started with the LLVM System](https://llvm.org/docs/GettingStarted.html)
+- [Building LLVM with CMake](https://llvm.org/docs/CMake.html)
+- [LLVM releases](https://github.com/llvm/llvm-project/releases)
+- [Homebrew LLVM formula](https://formulae.brew.sh/formula/llvm)
+
+Next: [Chapter 7](chapter-07.md) gives every AST node a `codegen()` method and emits LLVM IR.
 
 ## Need Help?
 
 Build issues? Questions?
 
-- **GitHub Issues:** [Report problems](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues)
-- **Discussions:** [Ask questions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions)
+- [Report a problem with GitHub Issues](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues)
+- [Ask a question in GitHub Discussions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions)
 
 Include:
-- Your OS and version
-- Full error message
-- Output of `cmake --version` and `ninja --version`
 
-I'll help you figure it out.
+- Your operating system and version
+- The chapter number
+- The exact command you ran
+- The complete error message
+- The output of `c++ --version` and `cmake --version`
+- The output of `llvm-config --version` for Chapter 6 and later

@@ -202,8 +202,10 @@ static bool ParseExportedFunctionSignature() {
   Signature->setReturnType(ReturnType);
   Signature->setReturnStructName(ReturnTypeInfo);
   FunctionSignatures[Signature->getName()] = Signature->clone();
-  if (CurrentToken != tok_colon)
-    return LogErrorExpression("Expected ':' in function definition"), false;
+  if (CurrentToken != tok_colon) {
+    LogErrorExpression("Expected ':' in function definition");
+    return false;
+  }
   getNextToken(); // eat ':'
   SkipExportedDefinitionBody();
   return true;
@@ -217,13 +219,17 @@ I register a method prototype — implicit `self` included — without generatin
 ```cpp
 static bool ParseMethodSignatureOnly(const string &ClassName, bool IsPublic) {
   getNextToken(); // eat 'def'
-  if (CurrentToken != tok_name)
-    return LogErrorExpression("Expected method name in class definition"), false;
+  if (CurrentToken != tok_name) {
+    LogErrorExpression("Expected method name in class definition");
+    return false;
+  }
   string MethodName = Name;
   SourceLocation SignatureLocation = CurrentTokenLocation;
   getNextToken(); // eat method name
-  if (CurrentToken != tok_lparen)
-    return LogErrorExpression("Expected '(' in method function signature"), false;
+  if (CurrentToken != tok_lparen) {
+    LogErrorExpression("Expected '(' in method function signature");
+    return false;
+  }
   getNextToken(); // eat '('
 
   vector<pair<string, ValueType>> Parameters = {{"self", ValueType::Pointer}};
@@ -236,8 +242,10 @@ static bool ParseMethodSignatureOnly(const string &ClassName, bool IsPublic) {
                    "Expected parameter name in method function signature"),
                false;
       string ParameterName = Name;
-      if (ParameterName == "self")
-        return LogErrorExpression("Method parameters cannot be named 'self'"), false;
+      if (ParameterName == "self") {
+        LogErrorExpression("Method parameters cannot be named 'self'");
+        return false;
+      }
       getNextToken();
       if (CurrentToken != tok_colon)
         return LogErrorExpression(
@@ -252,8 +260,10 @@ static bool ParseMethodSignatureOnly(const string &ClassName, bool IsPublic) {
       ParameterTypeInfo.push_back(TypeInfo);
       if (CurrentToken == tok_rparen)
         break;
-      if (CurrentToken != tok_comma)
-        return LogErrorExpression("Expected ')' or ',' in parameter list"), false;
+      if (CurrentToken != tok_comma) {
+        LogErrorExpression("Expected ')' or ',' in parameter list");
+        return false;
+      }
       getNextToken();
     }
   }
@@ -264,16 +274,20 @@ static bool ParseMethodSignatureOnly(const string &ClassName, bool IsPublic) {
       ParseOptionalReturnType(&ReturnTypeInfo, ValueType::None);
   if (ReturnType == ValueType::Error)
     return false;
-  if (MethodName == "__init__" && ReturnType != ValueType::None)
-    return LogErrorExpression("Constructor '__init__' must return None"), false;
+  if (MethodName == "__init__" && ReturnType != ValueType::None) {
+    LogErrorExpression("Constructor '__init__' must return None");
+    return false;
+  }
   string MangledName = ClassName + "." + MethodName;
   auto Signature = make_unique<FunctionSignatureNode>(
       MangledName, std::move(Parameters), SignatureLocation, ReturnType,
       std::move(ParameterTypeInfo), ReturnTypeInfo);
   FunctionSignatures[MangledName] = std::move(Signature);
   StructTypes[ClassName].Methods[MethodName] = IsPublic;
-  if (CurrentToken != tok_colon)
-    return LogErrorExpression("Expected ':' in function definition"), false;
+  if (CurrentToken != tok_colon) {
+    LogErrorExpression("Expected ':' in function definition");
+    return false;
+  }
   getNextToken();
   SkipExportedDefinitionBody();
   return true;
@@ -304,7 +318,8 @@ static bool ParseExportedDeclarationSignature() {
     return ParseTraitDefinition();
   if (CurrentToken == tok_type)
     return ParseTypeAliasDefinition();
-  return LogErrorExpression("Invalid export target"), false;
+  LogErrorExpression("Invalid export target");
+  return false;
 }
 ```
 
@@ -385,7 +400,8 @@ static bool CollectSignaturesFromFile(const string &Path) {
   if (ExistingState != SignatureFileStates.end()) {
     if (ExistingState->second == SignatureScanState::Done)
       return true;
-    return LogErrorExpression("Cyclic imports are not supported"), false;
+    LogErrorExpression("Cyclic imports are not supported");
+    return false;
   }
   SignatureFileStates[CanonicalPath] = SignatureScanState::InProgress;
 

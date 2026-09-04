@@ -131,8 +131,10 @@ static map<string, TraitTypeInfo> TraitTypes;
 ```cpp
 static bool ParseTraitDefinition() {
   getNextToken(); // eat 'trait'
-  if (CurrentToken != tok_name)
-    return LogErrorExpression("Expected trait name"), false;
+  if (CurrentToken != tok_name) {
+    LogErrorExpression("Expected trait name");
+    return false;
+  }
   string TraitName = Name;
   if (TraitTypes.count(TraitName) || StructTypes.count(TraitName) ||
       TypeAliases.count(TraitName))
@@ -140,14 +142,20 @@ static bool ParseTraitDefinition() {
                ("Type '" + TraitName + "' is already defined").c_str()),
            false;
   getNextToken(); // eat trait name
-  if (CurrentToken != tok_colon)
-    return LogErrorExpression("Expected ':' after trait name"), false;
+  if (CurrentToken != tok_colon) {
+    LogErrorExpression("Expected ':' after trait name");
+    return false;
+  }
   getNextToken(); // eat ':'
-  if (CurrentToken != tok_eol)
-    return LogErrorExpression("Expected newline after trait header"), false;
+  if (CurrentToken != tok_eol) {
+    LogErrorExpression("Expected newline after trait header");
+    return false;
+  }
   consumeNewlines();
-  if (CurrentToken != tok_indent)
-    return LogErrorExpression("Expected an indented trait body"), false;
+  if (CurrentToken != tok_indent) {
+    LogErrorExpression("Expected an indented trait body");
+    return false;
+  }
   getNextToken(); // eat INDENT
 
   TraitTypeInfo Trait;
@@ -161,12 +169,16 @@ static bool ParseTraitDefinition() {
       return LogErrorExpression("Expected method signature in trait body"),
              false;
     getNextToken(); // eat 'def'
-    if (CurrentToken != tok_name)
-      return LogErrorExpression("Expected trait method name"), false;
+    if (CurrentToken != tok_name) {
+      LogErrorExpression("Expected trait method name");
+      return false;
+    }
     TraitMethodSignature Method;
     Method.Name = Name;
-    if (!MethodNames.insert(Method.Name).second)
-      return LogErrorExpression("Duplicate trait method"), false;
+    if (!MethodNames.insert(Method.Name).second) {
+      LogErrorExpression("Duplicate trait method");
+      return false;
+    }
     getNextToken(); // eat method name
     if (CurrentToken != tok_lparen)
       return LogErrorExpression("Expected '(' in trait method signature"),
@@ -208,17 +220,23 @@ static bool ParseTraitDefinition() {
         ParseOptionalReturnType(&Method.ReturnTypeInfo, ValueType::None);
     if (Method.ReturnType == ValueType::Error)
       return false;
-    if (CurrentToken == tok_colon)
-      return LogErrorExpression("Trait methods cannot have a body"), false;
+    if (CurrentToken == tok_colon) {
+      LogErrorExpression("Trait methods cannot have a body");
+      return false;
+    }
     Trait.Methods.push_back(std::move(Method));
     if (CurrentToken == tok_eol)
       consumeNewlines();
   }
 
-  if (Trait.Methods.empty())
-    return LogErrorExpression("Trait requires at least one method"), false;
-  if (CurrentToken != tok_dedent)
-    return LogErrorExpression("Expected dedent after trait body"), false;
+  if (Trait.Methods.empty()) {
+    LogErrorExpression("Trait requires at least one method");
+    return false;
+  }
+  if (CurrentToken != tok_dedent) {
+    LogErrorExpression("Expected dedent after trait body");
+    return false;
+  }
   TraitTypes[TraitName] = std::move(Trait);
   PendingTokens.push_front(tok_block_end);
   getNextToken(); // eat DEDENT, then surface block-end

@@ -2827,38 +2827,52 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
 static bool ParseForParts(ValueType VarType, unique_ptr<ExpressionNode> &Start,
                           unique_ptr<ExpressionNode> &Condition, unique_ptr<ExpressionNode> &Update,
                           unique_ptr<ExpressionNode> &Body) {
-  if (CurrentToken != tok_assign)
-    return LogErrorExpression("Expected '=' after 'for' variable"), false;
+  if (CurrentToken != tok_assign) {
+    LogErrorExpression("Expected '=' after 'for' variable");
+    return false;
+  }
   getNextToken(); // eat '='
 
   Start = ParseExpression();
   if (!Start)
     return false;
-  if (!IsAssignable(VarType, Start->getType()))
-    return LogErrorExpression("For loop start must match loop variable type"), false;
-  if (!IsNumericType(VarType))
-    return LogErrorExpression("For loop variable must be numeric"), false;
+  if (!IsAssignable(VarType, Start->getType())) {
+    LogErrorExpression("For loop start must match loop variable type");
+    return false;
+  }
+  if (!IsNumericType(VarType)) {
+    LogErrorExpression("For loop variable must be numeric");
+    return false;
+  }
 
-  if (CurrentToken != tok_comma)
-    return LogErrorExpression("Expected ',' after 'for' start value"), false;
+  if (CurrentToken != tok_comma) {
+    LogErrorExpression("Expected ',' after 'for' start value");
+    return false;
+  }
   getNextToken(); // eat ','
 
   Condition = ParseExpression();
   if (!Condition)
     return false;
-  if (Condition->getType() != ValueType::Bool)
-    return LogErrorExpression("For loop condition must be bool"), false;
+  if (Condition->getType() != ValueType::Bool) {
+    LogErrorExpression("For loop condition must be bool");
+    return false;
+  }
 
-  if (CurrentToken != tok_comma)
-    return LogErrorExpression("Expected ',' after 'for' condition"), false;
+  if (CurrentToken != tok_comma) {
+    LogErrorExpression("Expected ',' after 'for' condition");
+    return false;
+  }
   getNextToken(); // eat ','
 
   Update = ParseExpression();
   if (!Update)
     return false;
 
-  if (CurrentToken != tok_colon)
-    return LogErrorExpression("Expected ':' after 'for' step"), false;
+  if (CurrentToken != tok_colon) {
+    LogErrorExpression("Expected ':' after 'for' step");
+    return false;
+  }
   getNextToken(); // eat ':'
 
   // Parse the suite after ':' (inline statement or indented block).

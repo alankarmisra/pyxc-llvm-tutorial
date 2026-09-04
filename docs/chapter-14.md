@@ -98,15 +98,21 @@ Four new tokens:
 *};
 ```
 
-Added to the keyword table alongside `for`:
+Added to the keyword table alongside `for`. The table is reflowed below, one entry per line, so the four real additions are easy to spot — the real source packs several entries per line and rewraps around them:
 
 ```cppdiff
 *static map<string, Token> Keywords = {
-*    {"def", tok_def},       {"extern", tok_extern}, {"return", tok_return},
-*    {"if", tok_if},         {"elif", tok_elif},     {"else", tok_else},
--    {"for", tok_for},
-+    {"for", tok_for},       {"while", tok_while},   {"do", tok_do},
-+    {"break", tok_break},   {"continue", tok_continue},
+*    {"def", tok_def},
+*    {"extern", tok_extern},
+*    {"return", tok_return},
+*    {"if", tok_if},
+*    {"elif", tok_elif},
+*    {"else", tok_else},
+*    {"for", tok_for},
++    {"while", tok_while},
++    {"do", tok_do},
++    {"break", tok_break},
++    {"continue", tok_continue},
 *    {"var", tok_var}};
 ```
 
@@ -329,7 +335,7 @@ Value *WhileStatementNode::codegen() {
 
 For a plain `while`, the entry branch goes straight to `CondBB`, so the condition is checked before the body ever runs. For `do`/`while`, the entry branch goes to `BodyBB` directly, skipping `CondBB` entirely the first time through — `CondBB` still gets filled in afterward (that's the second `if (IsDoWhile)` block), so every iteration *after* the first one still checks the condition the normal way, before looping back.
 
-The `ConstantFP::get(*TheContext, APFloat(0.0))` return at the end isn't special to `while` — it's the same "statements produce a dummy `0.0`" convention every statement-shaped node has used since [Chapter 11](chapter-11.md). pyxc still has no boolean type at the language level; `while 1:` and `while i < 5:` both work because every condition, however it's spelled, resolves to a `double` that's compared against `0.0`.
+The `ConstantFP::get(*TheContext, APFloat(0.0))` return at the end isn't special to `while`. It's the same "statements produce a dummy `0.0`" convention every statement-shaped node has used since [Chapter 11](chapter-11.md). pyxc still has no boolean type at the language level; `while 1:` and `while i < 5:` both work because every condition, however it's spelled, resolves to a `double` that's compared against `0.0`.
 
 ## `for` Loops Get a Dedicated Step Block
 
