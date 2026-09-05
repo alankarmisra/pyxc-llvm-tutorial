@@ -71,9 +71,10 @@ if(def_tok == 1) { ... }
 
 If you went with the string version, notice that comparing ["d", "e", "f", "\0"] (the contents of str_word) with ["d", "e", "f", "\0"] (the raw string) requires 4 comparisons in total, whereas the integer version takes only 1. Here, I made this nice diagram for you just to be condescending.  
 
-![String comparison](images/strcmp.png#gh-light-mode-only)
-
-![String comparison](images/strcmp_dark.png#gh-dark-mode-only)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/strcmp_dark.png">
+  <img src="images/strcmp.png" alt="String comparison">
+</picture>
 
 For an integer comparison, draw the diagram in your head. 1 == 1. 2 == 2. 3 == 3. You get it.
 
