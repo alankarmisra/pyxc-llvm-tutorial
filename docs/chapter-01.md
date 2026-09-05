@@ -73,6 +73,7 @@ If you went with the string version, notice that comparing ["d", "e", "f", "\0"]
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="images/strcmp_dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="images/strcmp.png">
   <img src="images/strcmp.png" alt="String comparison">
 </picture>
 
