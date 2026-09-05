@@ -5,23 +5,19 @@ description: "Build the first pyxc lexer and turn source characters into tokens.
 
 # 1. pyxc: Analyzing Program Words
 
-Start with the smallest compiler boundary:
+## Starting Small
 
-```text
-characters -> tokens
-```
+Start small. First try and group a stream of characters (`getchar()` ahoy!) into words or more generically into individual units of the language. 
 
-Given:
+For an input like:
 
 ```pyxc
-# add.pyxc
-def add(a, b): a + b
+def add(a, b): a + b # add.pyxc
 ```
 
-the first version of pyxc should print:
+you should print:
 
 ```text
-newline
 'def'
 name: add
 '('
@@ -35,16 +31,89 @@ name: a
 name: b
 newline
 ```
+Notice how `add(a, b)` gets split into individual units: `add`, `(`, `name: a`, `,`, `name: b` `)` regardless of the spacing between them. This should tell you that there's more to your task than splitting it blindly at spaces. Furthermore, `a` and `b` have been tagged as `name`, which should tell you there's even a little bit more going on in there. And lastly see that while spaces are discarded (hint: so are tabs), newlines are recognized as true citizens. 
 
-This component is the **lexer**. It does not decide whether the program is grammatically valid. It only groups characters into meaningful units — a process called *lexing*, from the Greek *lexis*, "word."
+!!!note
+    You will call this process of combining characters into individual units **lexing**, from the Greek *lexis*, "word." and consequently you will call the component that does such lexing a **Lexer**.
 
-Work in:
+The Lexer does not decide whether the program is grammatically valid. 
 
-```bash
-cd code/chapter-01
+## Source Code
+
+```text
+git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
+cd pyxc-llvm-tutorial/code/chapter-01
 ```
 
 ## 1. Create the Token Vocabulary
+
+Go back to the example:
+
+```pyxc
+def add(a, b): a + b # add.pyxc
+```
+
+**Pop quiz: Which comparison faster?**
+
+```cpp
+// string comparison
+string str_word = "def";
+if(str_word == "def") { ... }
+```
+
+Or
+
+```cpp
+// int comparison
+int def_tok = 1;
+if(def_tok == 1) { ... }
+```
+
+If you went with the string version, notice that comparing ["d", "e", "f", "\0"] (the contents of str_word) with ["d", "e", "f", "\0"] (the raw string) requires 4 comparisons in total, whereas the integer version takes only 1. Here, I made this nice diagram for you just to be condescending.  
+
+![strcmp](images/strcmp.png)
+
+For an integer comparison, draw the diagram in your head. 1 == 1. 2 == 2. 3 == 3. You get it.
+
+So yeah, when you first read a string `def`, swap it out for a number that represents `def`, and then you have access to cheap comparisons throughout your program. Now, you're not an uncivilized animal, so collect all your numbers into a nice enum. 
+
+!!!note
+    You will call these numbers **tokens** because they take the place of something. 
+
+Start typing furiously. In `pyxc.cpp`, define the tokens this chapter understands:
+
+```cpp
+enum Token {
+  // sneaky inserts
+  tok_eof = 1, // end of input, in C++ this is usually EOF
+  tok_eol, // a newline; since newlines are structural markers in pyxc 
+  tok_error, // obvio
+
+  tok_def, // "def"
+  tok_name, // [a-zA-Z_][a-zA-Z_0-9]*
+  tok_number, // [0..9]
+
+  tok_lparen, // '('
+  tok_rparen, // ')'
+  tok_comma, // ','
+  tok_colon, // ':'
+  tok_plus, // '+'
+};
+```
+
+!!!note
+    Instead of splitting the code into headers, and multiple class files, you'll just do it all in one file so it's easy for me to give you context on where to put what and you don't land up mucking around with header definitions. You can, and should, refactor the code once you're done tinkering and breaking things in this tutorial. Unless you're an uncivilized animal, in which case I totally get it. In which case maybe try writing pyxc in [BF](https://esolangs.org/wiki/Brainfuck).
+
+Notice I sneaked in `tok_eof`, `tok_eol`, `tok_error` - the comments in the code tell you why.  Some tokens like `tok_name` and `tok_number` are meta-tokens in that they represent the token type (It's a *name*!), but not the actual token string (It's *add*!). You can't possibly have an enum for all the names a user could possibly invent or all the numbers the user would possibly use. Possibly. Supposebly.
+
+Create two separate variables which will temporarily store the relevant name or number that was just read. 
+
+```cpp
+static string Name;
+static double NumberValue;
+```
+
+The lexer only needs to track the last name or number read in. You will need to copy it to a more permanent structure later in the process.
 
 Add the headers and namespace used by the lexer:
 
@@ -58,65 +127,15 @@ Add the headers and namespace used by the lexer:
 using namespace std;
 ```
 
-Then define the tokens this chapter understands:
+I never know which header is for what. I just try all of them until one sticks. 
 
-```cpp
-enum Token {
-  tok_eof = 1,
-  tok_eol,
-  tok_error,
+## 2. Normalize Newlines
 
-  tok_def,
-  tok_name,
-  tok_number,
+Old Mac OS used `\r` for a newline, modern macOS and Unix use `\n`, and Windows uses `\r\n`. 
 
-  tok_lparen,
-  tok_rparen,
-  tok_comma,
-  tok_colon,
-  tok_plus,
-};
-```
+![strcmp](images/MartinTVShowGIFbyMartin.gif)
 
-Use named tokens instead of raw characters: pass `"def"`, `"add"`, `"("` around and every later stage has to re-compare strings to recognize them. Pass `tok_def` around instead, and recognizing it is one integer comparison, and diagnostics can print readable names from it.
-
-Some tokens carry data. `def`, `(`, `+` are always the same characters, but a name or number is different every time, so one enum value can't represent it. Add two side channels for the token most recently read:
-
-```cpp
-static string Name;
-static double NumberValue;
-```
-
-The lexer returns `tok_name` or `tok_number`; these variables hold the corresponding spelling or numeric value. One `Name` variable is enough for the whole lexer, because it's always read immediately after the `tok_name` that set it, before the next name is lexed. That stops being true once names need to outlive a single `getToken()` call — the parser will copy `Name` into longer-lived AST nodes starting next chapter.
-
-## 2. Separate Keywords from Names
-
-Add the first keyword table:
-
-```cpp
-static map<string, Token> Keywords = {
-    {"def", tok_def},
-};
-```
-
-Both `def` and `add` begin as the same character pattern: a letter followed by letters, digits, or underscores. Read the full word first, then use this table to decide whether it is reserved.
-
-Add readable token names for the driver:
-
-```cpp
-static map<int, string> TokenNames = {
-    {tok_eof, "end of input"}, {tok_eol, "newline"},
-    {tok_error, "error"},      {tok_def, "'def'"},
-    {tok_name, "name"},        {tok_number, "number"},
-    {tok_lparen, "'('"},       {tok_rparen, "')'"},
-    {tok_comma, "','"},        {tok_colon, "':'"},
-    {tok_plus, "'+'"},
-};
-```
-
-## 3. Normalize Newlines at the Input Boundary
-
-Source files may contain `\n`, `\r\n`, or bare `\r`. Make all three look like `\n` to the lexer:
+Make all three look like `\n` to the lexer:
 
 ```cpp
 int advance() {
@@ -133,15 +152,23 @@ int advance() {
 }
 ```
 
-This creates one invariant for the rest of the compiler:
+You will now call `advance()` anywhere you get a `getchar()` itch:
 
-```text
-every source line ending -> '\n'
+## 3. Separate Keywords from Names
+
+Keywords like `def` are a sequence of alphabets. So are function names like `add` and parameter names. Create a `Keywords` map with a singular item:
+
+```cpp
+static map<string, Token> Keywords = {
+    {"def", tok_def},
+};
 ```
+
+When you read in a sequence of characters, check if it's a keyword and return the keyword token if it is. If it isn't, copy the sequence into `Name` and return `tok_name`. 
 
 ## 4. Keep One Character of Lookahead
 
-Start `getToken()` with:
+You now have the basics to start converting characters into tokens. Write `getToken()` to begin the process:
 
 ```cpp
 int getToken() {
@@ -262,7 +289,22 @@ default:
 
 Consume the character before returning. Otherwise the next call would report the same token forever.
 
-## 10. Add a Token-Printing Driver
+## 10. Create a Token mapping back to strings for debug output
+
+Add readable token names for the driver:
+
+```cpp
+static map<int, string> TokenNames = {
+    {tok_eof, "end of input"}, {tok_eol, "newline"},
+    {tok_error, "error"},      {tok_def, "'def'"},
+    {tok_name, "name"},        {tok_number, "number"},
+    {tok_lparen, "'('"},       {tok_rparen, "')'"},
+    {tok_comma, "','"},        {tok_colon, "':'"},
+    {tok_plus, "'+'"},
+};
+```
+
+## 11. Add a Token-Printing Driver
 
 Use the lexer until it returns `tok_eof`:
 
