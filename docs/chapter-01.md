@@ -3,6 +3,19 @@ section: "Foundations"
 description: "Build the first pyxc lexer and turn source characters into tokens."
 ---
 
+## A Brief Map Of Your Adventure
+
+You'll give the following abilities to pyxc in stages:
+
+1. Read the characters typed in on the REPL or in your source file
+2. Group them into words
+3. Arrange the words into a hierarchy to make sense of them
+4. Translate what's been understood into a language LLVM will understand
+5. Let LLVM translate that into a language the computer understands
+6. Run the program
+7. Add features to the language that make it a joy to use. This has less to do with LLVM and more to do with designing a language that is general enough to solve a wide range of problems in a way that is amenable to how YOU think. **Yes, you!** This is where the power lies. There are A LOT of languages that can solve a wide range of problems. But you get to pick and choose the features you want, and implement them into a language of your choice. Isn't that exciting?! 
+8. Brag/Profit/Do a little jiggy with it. 
+
 # 1. pyxc: Analyzing Program Words
 
 ## Starting Small

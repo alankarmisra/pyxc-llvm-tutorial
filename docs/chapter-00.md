@@ -93,7 +93,7 @@ Beyond the obvious bragging rights (you built a *language*), you'll:
 
 ## What Do You Need To Already Know
 
-You do not need compiler theory experience. You *do* need enough C++ to read classes, `unique_ptr`, containers, and ordinary functions. Of these, I'm even willing to explain `unique_ptr` if you so desire. Nothing is off limits. It does slow us down for a bit, but then we speed up. When a compiler term becomes useful, I'll introduce it next to the code that needs it. 
+You do not need compiler theory experience. You *do* need enough C++ to read classes, `unique_ptr`, containers and be able to grasp recursion, pointers/references, and basic data structures. When a compiler term becomes useful, I'll introduce it next to the code that needs it. 
 
 ## Why "pyxc"?
 pyxc is a small, nimble, fast, executable, and magical language. Or just something that looks like py-thon and creates x-c-cutables. I didn't dwell on this much. *"I like it"*, is what I'm saying. 
@@ -111,7 +111,7 @@ Regardless of what tool you use, the fundamentals won't change. LLVM works, and 
 
 ## About The Tutorial Tone
 
-I learn well by doing. Coding **is** understanding. I like reading tutorials that let me to do just that. Consequently, this tutorial is just that, written in a way that puts you in the implementation seat. **Yes, you.** The one still reading this tutorial, *like a boss*. 
+I learn well by doing. Coding **is** understanding. Making mistakes **is** understanding. Chasing bugs **is** understanding. I like reading tutorials that let me to do just that. Consequently, this tutorial is just that, written in a way that puts you in the implementation seat. **Yes, you.** The one still reading this tutorial, *like a boss*. 
 
 And on that note, it's time you stopped reading and started doing. And I'll lay off the animated gifs. Fire up your terminal and begin by checking if you have the required software installed. 
 
@@ -149,17 +149,17 @@ You'll give the following abilities to pyxc in stages:
 
 ## Where You're Headed
 
-This section has more code examples of the progress you'll make in building the language. If you like structure, I respect you, and you can continue reading. If you like understanding through building, I respect you. Skip to [Chapter 1](chapter-01.md) and start building. 
+This section has more code examples of how the language evolves through the chapters. If you couldn't be bothered with any of this and just want to get building, I respect that. Skip to [Chapter 1](chapter-01.md). 
 
 ### Foundations
 
-In **Chapters 1–5**, You teach pyxc to read what you write, convert it into its own internal structure, understand how the pieces fit together, and tell you if you get something wrong at the pyxc syntax level.
+In **Chapters 1–5**, You teach pyxc to read what you write, make sense of it, and report syntax errors. pyxc is young at this point and understands only one data type, the mighty `double`.
 
 ### LLVM and Execution
 
-In **Chapter 6**, You set up LLVM. You could be in for a smooth ride, or on a highway to hell and, hopefully, back. If it's the latter, allow yourself a break. But do come back, because the compiler isn't going to build itself. Of course, if you do find yourself at the gates of hell, you can [get in touch with me](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues) and we can take a crack at it together.
+In **Chapter 6**, You set up LLVM. You could be in for a smooth ride, or on a highway to hell. If it's the latter, allow yourself a break. But do come back, because the compiler isn't going to build itself. Of course, if you do find yourself at the gates of hell and can't find your way back, you can [get in touch with me](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues) and we can take a crack at it together.
 
-In **Chapters 7 and 8**, you extend pyxc to understand and convert a program's intentions into an intention/code for LLVM. At this point LLVM takes over and converts it's intention. At this stage, we can type pyxc code into a REPL and see the output right away. Goose bumps galore.
+In **Chapters 7 and 8**, you'll extend pyxc to convert what you understand of the program's intention into something that LLVM understands. LLVM can then emit binary code to execute the intention, and you'll have something you can run. At this stage, we can type pyxc code into a REPL and see the output right away. Goose bumps galore.
 
 In **Chapter 9**, you add file input mode, so you can run source files the same way, instead of typing everything into the REPL one line at a time.
 
@@ -179,7 +179,7 @@ In **Chapters 19–23**, you round things out: unsigned integer types (`uint8` t
 
 ### Data and Memory
 
-In **Chapters 24–33**, you implement the full C-style memory model: structs and field access, pointer types and address-of, pointer arithmetic, fixed-size arrays, heap allocation with `malloc`/`free`/`sizeof`, type aliases, string literals and C interop, character literals, Unicode literals, and variadic `extern` functions for real `printf`/`scanf`-style calls. By the end of this phase, pyxc is a serious systems programming language: You can write K&R-style algorithms, call any C library function, and manually manage memory just as you would in C or C++.
+In **Chapters 24–33**, you implement the full C-style memory model: structs and field access, pointer types and address-of, pointer arithmetic, fixed-size arrays, heap allocation with `malloc`/`free`/`sizeof`, type aliases, string literals and C interop, character literals, Unicode literals, and variadic `extern` functions for real `printf`/`scanf`-style calls. By the end of this phase, you'll be sporting a mouthful of jargon, and pyxc will become a serious systems programming language: You'll be able to write K&R-style algorithms, call any C library function, and manually manage memory just as you would in C or C++. 
 
 ```pyxc
 extern def malloc(n: int64) -> ptr[int8]
@@ -213,7 +213,7 @@ def main() -> int:
 
 ### Expression and Mutation Conveniences
 
-In **Chapters 34 and 35**, You add assignment as an expression (`while (c = getchar()) != EOF:`), compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`) and prefix/postfix `++`/`--`. These don't let you express anything you couldn't already express with plain assignment — they're pure convenience.
+In **Chapters 34 and 35**, you add assignment as an expression (`while (c = getchar()) != EOF:`), compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`) and prefix/postfix `++`/`--`. These don't let you express anything you couldn't already express with plain assignment — they're pure convenience.
 
 ```pyxc
 extern def getchar() -> int32
@@ -323,201 +323,13 @@ pyxc --emit exe -o out main.pyxc
 
 ### Future (Potential) Track
 
-The following are things I'm still thinking about. 
+When I first started this blog, I had not expected to get this far. But here I am, standing on the shoulders of giants, potentially pissing them off. 
 
-### Closures
+![Die](images/ShouldersOfGiants.gif)
 
-Lambda syntax and captured variables. The one open question that actually blocks starting: capture semantics. Capture by value is safe under my no-GC model with no extra work; capture by reference means a closed-over variable has to outlive the closure, which is a real lifetime problem I have no borrow-checker to enforce yet. 
+Beyond the core language, potential future features include closures, enums, generics, operator overloading, inheritance, concurrency, a standard library, compile-time execution, better tooling, testing support, and eventually self-hosting. But that's all aspirational—one chapter at a time.
 
-```pyxc
-def make_adder(n: int) -> ptr[def(int) -> int]:
-  return \(x: int) -> int: x + n   # captures n — capture semantics still undecided
-
-var add5: ptr[def(int) -> int] = make_adder(5)
-printd(float64(add5(10)))  # 15.000000
-```
-
-### Enums and Function Pointers
-
-Enums (`enum Color: Red, Green, Blue`) close a real, obvious gap — no implicit int conversion, `switch`-friendly, and a natural place to add exhaustiveness checking so an unhandled variant is a compile error, not a runtime surprise. Function pointers (`ptr[def(int, int) -> int]`) follow right after: callbacks, `qsort`, dispatch tables, and a real prerequisite if You ever get serious about the self-hosting bootstrap plan.
-
-```pyxc
-enum Direction:
-  North, South, East, West
-
-def opposite(d: Direction) -> Direction:
-  switch d:
-    case Direction.North: return Direction.South
-    case Direction.South: return Direction.North
-    case Direction.East:  return Direction.West
-    case Direction.West:  return Direction.East
-    # no default needed once exhaustiveness checking exists —
-    # the compiler already knows every Direction is handled
-
-var callback: ptr[def(int) -> int] = square
-```
-
-### Unicode Identifiers and String Interpolation
-
-The two heaviest items in the whole ergonomics list, which is why they get their own slot instead of hiding inside the run above. Unicode identifiers (`café`, `变量` as names, not just literal content) need real `XID_Start`/`XID_Continue` tables, a normalization decision, and a homoglyph policy — an actual security question, not just an implementation detail. String interpolation (`f"result: {x}"`) is simpler, but the buffer-size strategy for the `sprintf` it lowers to still needs deciding first.
-
-```pyxc
-var café_total: float64 = 4.50
-printf(f"Total: {café_total}\n")
-```
-
-### Type System Completion
-
-The rest of the type system I've been deferring: optional/nullable types, union types, bit-fields, `const` pointers, multidimensional arrays, pointer-to-array, and a real `void` pointer. Systems-programming completeness — the stuff C gives you that pyxc still makes you work around.
-
-```pyxc
-def find(arr: int[10], target: int) -> Option[int]:
-  for i in range(10):
-    if arr[i] == target: return i
-  return None
-```
-
-### OOP Refinements
-
-Static class members, operator overloading, a `__str__`/`print` hook, abstract methods on traits, and — the one that actually needs a real decision, not just an afternoon of coding — whether pyxc gets inheritance at all, given that the trait model You already built deliberately has no vtable.
-
-```pyxc
-class Vec2:
-  public x: float64
-  public y: float64
-
-  static def zero() -> Vec2:
-    return Vec2(0.0, 0.0)
-
-  def __add__(other: Vec2) -> Vec2:
-    return Vec2(self.x + other.x, self.y + other.y)
-```
-
-### Import and Module Refinements
-
-Selective imports, import aliasing, and directory-style modules (`__init__.pyxc`) — the ergonomics layer on top of the module system You already built in Chapters 43–45.
-
-```pyxc
-from stdlib.io import printf, getchar
-import stdlib.math as m
-
-printf("sqrt(2) = %f\n", m.sqrt(2.0))
-```
-
-### Generics Completion
-
-Generic Traits already exist (**Chapter 42**); this extends the same idea to ordinary functions and structs — `def max[T](a: T, b: T) -> T`, `struct Stack[T]` — monomorphised at each instantiation the way C++ templates work, not type-erased the way Java's are. Everything downstream that wants a generic container needs this first.
-
-```pyxc
-def max[T](a: T, b: T) -> T:
-  return a if a > b else b
-
-struct Stack[T]:
-  items: T[64]
-  count: int
-```
-
-### Generics-Enabled Ecosystem
-
-Once generic structs exist, generators/iterators and real generic collections (`List[T]`, `Dict[K,V]`, `Set[T]`) become possible. This is where pyxc stops making me reimplement a dynamic array by hand every time you need one.
-
-```pyxc
-var names: List[ptr[int8]] = List[ptr[int8]]()
-names.append("Ada")
-names.append("Grace")
-for name in names:
-  printf("%s\n", name)
-```
-
-### Concurrency
-
-Ownership rules for shared state, spawning tasks and threads, synchronization primitives, message passing, parallel loops and work partitioning, determinism and race debugging, and eventually parallelizing the compiler itself. The real blocker is the same shape as closures: You need to decide the safety model before You can design any of the rest concretely, not discover it chapter by chapter.
-
-```pyxc
-def worker(ch: Channel[int]):
-  ch.send(compute())
-
-def main() -> int:
-  var ch: Channel[int] = Channel[int]()
-  spawn worker(ch)
-  printd(float64(ch.recv()))
-  return 0
-```
-
-### Standard Library
-
-No new language features here, just wrapping what `extern` already lets me do into real modules — `stdio`, `stdlib`, `string`, `math`, and a built-in `print` so You stop hand-declaring `printf` in every single program. Cheap to build, high payoff for anyone actually writing pyxc programs instead of reading about how the compiler works.
-
-```pyxc
-import stdlib.stdio
-import stdlib.math
-
-def main() -> int:
-  print("sqrt(2) =", sqrt(2.0))
-  return 0
-```
-
-### Verification
-
-A two-phase program verifier: sequential first (`requires`/`ensures`/`assert`/loop `invariant`, SMT-backed, needs enums to exist first), then a concurrency-aware phase once the concurrency track above actually lands — thread interleavings, synchronization primitives, memory-order rules, real race-freedom checks.
-
-```pyxc
-def divide(a: int, b: int) -> int:
-  requires b != 0
-  ensures result * b == a
-  return a / b
-```
-
-### Compile-Time Execution
-
-You want Zig-style `comptime` rather than a separate macro language like Rust's `macro_rules!` — arbitrary pyxc code that runs at compile time and produces pyxc values or types, with no second language to learn and no opaque macro-expansion errors. You already have a JIT; running pyxc code at compile time isn't far from what the JIT already does.
-
-```pyxc
-comptime def storage_type(n: int) -> type:
-  if n <= 32: return int32
-  return int64
-
-var x: comptime storage_type(16) = 0   # x: int32 at compile time
-```
-
-### Statements and Diagnostics
-
-The statement-side equivalent: `assert`, `defer`, `static` locals, `goto`, command-line arguments to `main`, and a lint for accidental assignment in a condition. Same reasoning as above — convenience, not new expressive power.
-
-```pyxc
-def read_first_line(path: ptr[int8]) -> int:
-  var f: ptr[int8] = fopen(path, "r")
-  assert f != NULL, "could not open file"
-  defer fclose(f)
-  return 0
-```
-
-### Expressions, Bindings, and Calls
-
-A run of small, independent conveniences on the expression side: ternary expressions, `const` bindings, default parameters, named arguments, multiple return values, a real `NULL`, and `len()`/`in`. None of these change what's *possible* to write in pyxc — You could already express all of it, just more awkwardly. They're worth doing because they're cheap and because a reader coming from Python or C++ will reach for every one of them by instinct.
-
-```pyxc
-def clamp(x: int, lo: int = 0, hi: int = 100) -> int:
-  return lo if x < lo else (hi if x > hi else x)
-
-var quotient, remainder = divmod(17, 5)
-```
-
-### Tooling and Quality
-
-Closing the stale source-location bug properly (every codegen error, not just parse errors, pointing at the right line and column), function attributes, escape analysis to promote heap allocations to the stack automatically, REPL quality-of-life improvements, incremental compilation, real packaging, and — if you want pyxc programs to double as MCP servers — a tool-export mechanism. A language server belongs somewhere in here too, though it's IDE tooling built around the compiler, not a compiler feature itself.
-
-```bash
-pyxc build          # reads a project manifest, compiles + links
-pyxc run main.pyxc  # incremental: only recompiles what changed
-```
-
-### Self-Hosted Testing and Coverage
-
-Two ideas here, different sizes. The small one: a `test/assert.pyxc` module other `.pyxc` test files can `import`, giving me helpers like `assert.eq_int(actual, expected, label)` that print a `FAIL: ...` line and call `exit(1)` on mismatch. Nothing new needed from the compiler for this — `export`/`import` and variadic `extern def` are already enough — it just replaces the copy-pasted printf-and-compare boilerplate every hand-written test of mine currently repeats.
-
-The bigger one: pyxc-level code coverage, i.e. knowing which lines of a `.pyxc` program actually executed, the same thing `llvm-cov` already does for `pyxc.cpp` itself. This is a real compiler feature, not a library — my own codegen would need to emit profiling counter bumps tied to pyxc source locations, plus a coverage-mapping section. I'm not starting from nothing, though: You already track source locations for diagnostics, so the raw material is half there. I'd want this in place before Concurrency below lands, not after: once concurrent pyxc programs exist, knowing which lines ran and in what order stops being a nice-to-have and becomes the main tool for debugging races and nondeterministic failures.
-
+For now, head on over to [Chapter 1](chapter-01.md) and start building.
 
 ## Need Help?
 
