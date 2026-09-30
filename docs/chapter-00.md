@@ -28,7 +28,7 @@ I've got several examples in the notes to follow, but here's something that intr
 ```pyxc
 extern def printd(x: float64)
 
-# A trait is a named contract — any class that declares it must satisfy it.
+# A trait is a named contract, any class that declares it must satisfy it.
 trait Measurable:
   def area() -> int
   def perimeter() -> int
@@ -93,7 +93,7 @@ Beyond the obvious bragging rights (you built a *language*), you'll:
 
 ## What Do You Need To Already Know
 
-You do not need compiler theory experience. You *do* need enough C++ to read classes, `unique_ptr`, containers and be able to grasp recursion, pointers/references, and basic data structures. When a compiler term becomes useful, I'll introduce it next to the code that needs it. 
+You do not need compiler theory experience. You *do* need to know enough C++ to read classes, `unique_ptr`, containers. You *do* need to be able to grasp recursion, pointers/references, and basic data structures. When a compiler term becomes useful, I'll introduce it next to the code that needs it. 
 
 ## Why "pyxc"?
 pyxc is a small, nimble, fast, executable, and magical language. Or just something that looks like py-thon and creates x-c-cutables. I didn't dwell on this much. *"I like it"*, is what I'm saying. 
@@ -101,7 +101,7 @@ pyxc is a small, nimble, fast, executable, and magical language. Or just somethi
 ## What is LLVM?
 So many questions. All you need to know about LLVM right now is that it will help you write production quality compilers faster. Rust, Swift, Kotlin/Native, C/C++ compilers (Clang), Mojo, among others use LLVM under the hood. Using the IIGEFTIGEFU principle (if it's good enough for them, it's good enough for us), we will use LLVM.
 
-If you're into history, and stuff, LLVM was written by [Chris Lattner](https://nondot.org/sabre/) as part of his PHD thesis. 
+If you're into history, and stuff, LLVM was written by [Chris Lattner](https://nondot.org/sabre/) as part of his PhD thesis. 
 
 You should know that there are alternatives to LLVM.
 
@@ -111,7 +111,7 @@ Regardless of what tool you use, the fundamentals won't change. LLVM works, and 
 
 ## About The Tutorial Tone
 
-I learn well by doing. Coding **is** understanding. Making mistakes **is** understanding. Chasing bugs **is** understanding. I like reading tutorials that let me to do just that. Consequently, this tutorial is just that, written in a way that puts you in the implementation seat. **Yes, you.** The one still reading this tutorial, *like a boss*. 
+I learn well by doing. Coding **is** understanding. Making mistakes **is** understanding. Chasing bugs **is** understanding. I like reading tutorials that let me do just that. Consequently, this tutorial is just that, written in a way that puts you in the implementation seat. **Yes, you.** The one still reading this tutorial, *like a boss*. 
 
 And on that note, it's time you stopped reading and started doing. And I'll lay off the animated gifs. Fire up your terminal and begin by checking if you have the required software installed. 
 
@@ -153,11 +153,11 @@ This section has more code examples of how the language evolves through the chap
 
 ### Foundations
 
-In **Chapters 1–5**, You teach pyxc to read what you write, make sense of it, and report syntax errors. pyxc is young at this point and understands only one data type, the mighty `double`.
+In **Chapters 1–5**, you teach pyxc to read what you write, make sense of it, and report syntax errors. pyxc is young at this point and understands only one data type, the mighty `double`.
 
 ### LLVM and Execution
 
-In **Chapter 6**, You set up LLVM. You could be in for a smooth ride, or on a highway to hell. If it's the latter, allow yourself a break. But do come back, because the compiler isn't going to build itself. Of course, if you do find yourself at the gates of hell and can't find your way back, you can [get in touch with me](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues) and we can take a crack at it together.
+In **Chapter 6**, you set up LLVM. You could be in for a smooth ride, or on a highway to hell. If it's the latter, allow yourself a break. But do come back, because the compiler isn't going to build itself. Of course, if you do find yourself at the gates of hell and can't find your way back, you can [get in touch with me](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues) and we can take a crack at it together.
 
 In **Chapters 7 and 8**, you'll extend pyxc to convert what you understand of the program's intention into something that LLVM understands. LLVM can then emit binary code to execute the intention, and you'll have something you can run. At this stage, we can type pyxc code into a REPL and see the output right away. Goose bumps galore.
 
@@ -213,7 +213,7 @@ def main() -> int:
 
 ### Expression and Mutation Conveniences
 
-In **Chapters 34 and 35**, you add assignment as an expression (`while (c = getchar()) != EOF:`), compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`) and prefix/postfix `++`/`--`. These don't let you express anything you couldn't already express with plain assignment — they're pure convenience.
+In **Chapters 34 and 35**, you add assignment as an expression (`while (c = getchar()) != EOF:`), compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`) and prefix/postfix `++`/`--`. These don't let you express anything you couldn't already express with plain assignment, they're pure convenience.
 
 ```pyxc
 extern def getchar() -> int32
@@ -237,7 +237,7 @@ In **Chapters 36–42**, you add an object model: `class` declarations, methods 
 ```pyxc
 extern def printd(x: float64)
 
-# A trait is a named contract — any class that declares it must satisfy it.
+# A trait is a named contract, any class that declares it must satisfy it.
 trait Measurable:
   def area() -> int
   def perimeter() -> int

@@ -3,7 +3,7 @@ section: "Foundations"
 description: "Build the first pyxc lexer and turn source characters into tokens."
 ---
 
-## A Brief Map Of Your Adventure
+# A Brief Map Of Your Adventure
 
 You'll give the following abilities to pyxc in stages:
 
